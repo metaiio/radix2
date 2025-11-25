@@ -491,6 +491,69 @@ local function clearCursor(num)
     return true
 end
 
+local function reopenContainerWithRetry(containerName, pack)
+    local maxAttempts = 5
+    local attempt = 0
+    
+    printf('  [DEBUG] reopenContainerWithRetry called with: containerName="%s", pack="%s"', containerName, pack or 'nil')
+    
+    while attempt < maxAttempts do
+        attempt = attempt + 1
+        
+        if attempt == 1 then
+            printf('  Reopening %s...', containerName)
+        else
+            printf('  Retry attempt %d/%d to reopen %s...', attempt, maxAttempts, containerName)
+        end
+        
+        -- Try to open the container
+        if pack == 'Enviro' then
+            -- For crafting stations
+            printf('  [DEBUG] Opening crafting station')
+            mq.cmdf('/mqt %s', containerName)
+            mq.delay(1000)
+            if mq.TLO.Target.Distance() > 15 then
+                mq.cmdf('/nav spawn %s', containerName)
+                mq.delay(60000, function() return not mq.TLO.Navigation.Active() end)
+            end
+            mq.cmd('/click left target')
+            mq.delay(2500, function() return mq.TLO.Window('TradeskillWnd').Open() end)
+        else
+            -- For inventory containers - use the pack slot notation that was passed in
+            printf('  [DEBUG] Opening inventory container using pack slot: %s', pack)
+            
+            -- Close inventory bags if open (they might interfere)
+            if mq.TLO.Window('InventoryWindow').Open() then
+                printf('  [DEBUG] Closing inventory windows first')
+                mq.cmd('/keypress CLOSE_INV_BAGS')
+                mq.delay(500)
+            end
+            
+            mq.cmdf('/itemnotify "%s" rightmouseup', pack)
+            mq.delay(2500, function() return mq.TLO.Window('TradeskillWnd').Open() end)
+        end
+        
+        -- Check if it worked
+        local windowOpen = mq.TLO.Window('TradeskillWnd').Open()
+        printf('  [DEBUG] After open attempt: TradeskillWnd.Open() = %s', tostring(windowOpen))
+        
+        if windowOpen then
+            printf('  Container opened successfully%s', attempt > 1 and (' after ' .. attempt .. ' attempts') or '')
+            return true
+        end
+        
+        -- If not opened and we have more attempts, wait before retry
+        if attempt < maxAttempts then
+            printf('  Container did not open, waiting 2 seconds before retry...')
+            mq.delay(2000)
+        end
+    end
+    
+    -- All attempts failed
+    printf('  ERROR: Failed to reopen container after %d attempts', maxAttempts)
+    return false
+end
+
 local function autoSellCraftedItems()
     if not selectedRecipe then return false end
     
@@ -967,31 +1030,17 @@ local function craftInExperimental(pack)
                     
                     if not mq.TLO.Window('TradeskillWnd').Open() then
                         printf('  Tradeskill window closed, reopening...')
-                        if pack == 'Enviro' then
-                            mq.cmdf('/mqt %s', selectedRecipe.Container)
-                            mq.delay(1000)
-                            if mq.TLO.Target.Distance() > 15 then
-                                mq.cmdf('/nav spawn %s', selectedRecipe.Container)
-                                mq.delay(60000, function() return not mq.TLO.Navigation.Active() end)
-                            end
-                            mq.cmd('/click left target')
-                            mq.delay(1000, function() return mq.TLO.Window('TradeskillWnd').Open() end)
-                        else
-                            mq.cmdf('/itemnotify "%s" rightmouseup', selectedRecipe.Container)
-                            mq.delay(1000, function() return mq.TLO.Window('TradeskillWnd').Open() end)
-                        end
                         
-                        if mq.TLO.Window('TradeskillWnd').Open() then
-                            printf('  Clicking Experiment button...')
-                            mq.cmd('/notify TradeskillWnd COMBW_ExperimentButton leftmouseup')
-                            mq.delay(500)
-                            mq.cmdf('/keypress OPEN_INV_BAGS')
-                            mq.delay(500)
-                        else
-                            printf('  ERROR: Could not reopen window')
-                            crafting.FailedMessage = 'Could not reopen window after auto-sell'
+                        if not reopenContainerWithRetry(selectedRecipe.Container, pack) then
+                            crafting.FailedMessage = 'Could not reopen container after auto-sell'
                             return
                         end
+                        
+                        printf('  Clicking Experiment button...')
+                        mq.cmd('/notify TradeskillWnd COMBW_ExperimentButton leftmouseup')
+                        mq.delay(500)
+                        mq.cmdf('/keypress OPEN_INV_BAGS')
+                        mq.delay(500)
                     end
                     
                     printf('  Ready to continue experimental crafting')
@@ -1062,31 +1111,17 @@ local function craftInExperimental(pack)
                         
                         if not mq.TLO.Window('TradeskillWnd').Open() then
                             printf('  Tradeskill window closed, reopening...')
-                            if pack == 'Enviro' then
-                                mq.cmdf('/mqt %s', selectedRecipe.Container)
-                                mq.delay(1000)
-                                if mq.TLO.Target.Distance() > 15 then
-                                    mq.cmdf('/nav spawn %s', selectedRecipe.Container)
-                                    mq.delay(60000, function() return not mq.TLO.Navigation.Active() end)
-                                end
-                                mq.cmd('/click left target')
-                                mq.delay(1000, function() return mq.TLO.Window('TradeskillWnd').Open() end)
-                            else
-                                mq.cmdf('/itemnotify "%s" rightmouseup', selectedRecipe.Container)
-                                mq.delay(1000, function() return mq.TLO.Window('TradeskillWnd').Open() end)
-                            end
                             
-                            if mq.TLO.Window('TradeskillWnd').Open() then
-                                printf('  Clicking Experiment button...')
-                                mq.cmd('/notify TradeskillWnd COMBW_ExperimentButton leftmouseup')
-                                mq.delay(500)
-                                mq.cmdf('/keypress OPEN_INV_BAGS')
-                                mq.delay(500)
-                            else
-                                printf('  ERROR: Could not reopen window')
-                                crafting.FailedMessage = 'Could not reopen window after auto-sell'
+                            if not reopenContainerWithRetry(selectedRecipe.Container, pack) then
+                                crafting.FailedMessage = 'Could not reopen container after auto-sell'
                                 return
                             end
+                            
+                            printf('  Clicking Experiment button...')
+                            mq.cmd('/notify TradeskillWnd COMBW_ExperimentButton leftmouseup')
+                            mq.delay(500)
+                            mq.cmdf('/keypress OPEN_INV_BAGS')
+                            mq.delay(500)
                         end
                         
                         printf('  Ready to continue experimental crafting')
@@ -1243,56 +1278,39 @@ local function craftInTradeskillWindow(pack)
                 if autoSellCraftedItems() then
                     printf('Auto-sell complete, reopening tradeskill window...')
                     
-                    if pack == 'Enviro' then
-                        printf('  Returning to crafting station...')
-                        mq.cmdf('/mqt %s', selectedRecipe.Container)
-                        mq.delay(1000)
-                        if mq.TLO.Target.Distance() > 15 then
-                            mq.cmdf('/nav spawn %s', selectedRecipe.Container)
-                            mq.delay(60000, function() return not mq.TLO.Navigation.Active() end)
-                        end
-                        mq.cmd('/click left target')
-                        mq.delay(1000, function() return mq.TLO.Window('TradeskillWnd').Open() end)
-                    else
-                        printf('  Reopening %s...', selectedRecipe.Container)
-                        mq.cmdf('/itemnotify "%s" rightmouseup', selectedRecipe.Container)
-                        mq.delay(1000, function() return mq.TLO.Window('TradeskillWnd').Open() end)
+                    if not reopenContainerWithRetry(selectedRecipe.Container, pack) then
+                        crafting.FailedMessage = 'Could not reopen container after auto-sell'
+                        return
                     end
                     
-                    if mq.TLO.Window('TradeskillWnd').Open() then
-                        printf('  Window reopened, searching for recipe...')
-                        mq.cmd('/nomodkey /notify TradeskillWnd COMBW_SearchTextEdit leftmouseup')
-                        mq.delay(100)
-                        mq.TLO.Window('TradeskillWnd/COMBW_SearchTextEdit').SetText(selectedRecipe.Recipe)()
-                        mq.delay(100)
-                        mq.delay(5000, function() return mq.TLO.Window('TradeskillWnd/COMBW_SearchButton').Enabled() end)
-                        mq.cmd('/nomodkey /notify TradeskillWnd COMBW_SearchButton leftmouseup')
-                        mq.delay(1000)
-                        
-                        local listSize = mq.TLO.Window('TradeskillWnd/COMBW_RecipeList').Items()
-                        if listSize > 0 then
-                            for i = 1, listSize do
-                                local recipeName = mq.TLO.Window('TradeskillWnd/COMBW_RecipeList').List(i)()
-                                if recipeName == selectedRecipe.Recipe then
-                                    printf('  Selecting recipe at index %d', i)
-                                    mq.TLO.Window('TradeskillWnd/COMBW_RecipeList').Select(i)()
-                                    mq.delay(1000)
-                                    break
-                                end
+                    printf('  Window reopened, searching for recipe...')
+                    mq.cmd('/nomodkey /notify TradeskillWnd COMBW_SearchTextEdit leftmouseup')
+                    mq.delay(100)
+                    mq.TLO.Window('TradeskillWnd/COMBW_SearchTextEdit').SetText(selectedRecipe.Recipe)()
+                    mq.delay(100)
+                    mq.delay(5000, function() return mq.TLO.Window('TradeskillWnd/COMBW_SearchButton').Enabled() end)
+                    mq.cmd('/nomodkey /notify TradeskillWnd COMBW_SearchButton leftmouseup')
+                    mq.delay(1000)
+                    
+                    local listSize = mq.TLO.Window('TradeskillWnd/COMBW_RecipeList').Items()
+                    if listSize > 0 then
+                        for i = 1, listSize do
+                            local recipeName = mq.TLO.Window('TradeskillWnd/COMBW_RecipeList').List(i)()
+                            if recipeName == selectedRecipe.Recipe then
+                                printf('  Selecting recipe at index %d', i)
+                                mq.TLO.Window('TradeskillWnd/COMBW_RecipeList').Select(i)()
+                                mq.delay(1000)
+                                break
                             end
                         end
-                        
-                        mq.delay(2000, function() return mq.TLO.Window('TradeskillWnd/CombineButton').Enabled() end)
-                        if mq.TLO.Window('TradeskillWnd/CombineButton').Enabled() then
-                            printf('  Ready to continue crafting')
-                        else
-                            printf('  WARNING: Combine button not ready, stopping')
-                            crafting.FailedMessage = 'Could not resume after auto-sell'
-                            return
-                        end
+                    end
+                    
+                    mq.delay(2000, function() return mq.TLO.Window('TradeskillWnd/CombineButton').Enabled() end)
+                    if mq.TLO.Window('TradeskillWnd/CombineButton').Enabled() then
+                        printf('  Ready to continue crafting')
                     else
-                        printf('  ERROR: Could not reopen tradeskill window')
-                        crafting.FailedMessage = 'Could not reopen window after auto-sell'
+                        printf('  WARNING: Combine button not ready, stopping')
+                        crafting.FailedMessage = 'Could not resume after auto-sell'
                         return
                     end
                 else
@@ -1377,56 +1395,39 @@ local function craftInTradeskillWindow(pack)
                         if autoSellCraftedItems() then
                             printf('  Auto-sell complete, reopening tradeskill window...')
                             
-                            if pack == 'Enviro' then
-                                printf('  Returning to crafting station...')
-                                mq.cmdf('/mqt %s', selectedRecipe.Container)
-                                mq.delay(1000)
-                                if mq.TLO.Target.Distance() > 15 then
-                                    mq.cmdf('/nav spawn %s', selectedRecipe.Container)
-                                    mq.delay(60000, function() return not mq.TLO.Navigation.Active() end)
-                                end
-                                mq.cmd('/click left target')
-                                mq.delay(1000, function() return mq.TLO.Window('TradeskillWnd').Open() end)
-                            else
-                                printf('  Reopening %s...', selectedRecipe.Container)
-                                mq.cmdf('/itemnotify "%s" rightmouseup', selectedRecipe.Container)
-                                mq.delay(1000, function() return mq.TLO.Window('TradeskillWnd').Open() end)
+                            if not reopenContainerWithRetry(selectedRecipe.Container, pack) then
+                                crafting.FailedMessage = 'Could not reopen container after auto-sell'
+                                return
                             end
                             
-                            if mq.TLO.Window('TradeskillWnd').Open() then
-                                printf('  Window reopened, searching for recipe...')
-                                mq.cmd('/nomodkey /notify TradeskillWnd COMBW_SearchTextEdit leftmouseup')
-                                mq.delay(100)
-                                mq.TLO.Window('TradeskillWnd/COMBW_SearchTextEdit').SetText(selectedRecipe.Recipe)()
-                                mq.delay(100)
-                                mq.delay(5000, function() return mq.TLO.Window('TradeskillWnd/COMBW_SearchButton').Enabled() end)
-                                mq.cmd('/nomodkey /notify TradeskillWnd COMBW_SearchButton leftmouseup')
-                                mq.delay(1000)
-                                
-                                local listSize = mq.TLO.Window('TradeskillWnd/COMBW_RecipeList').Items()
-                                if listSize > 0 then
-                                    for i = 1, listSize do
-                                        local recipeName = mq.TLO.Window('TradeskillWnd/COMBW_RecipeList').List(i)()
-                                        if recipeName == selectedRecipe.Recipe then
-                                            printf('  Selecting recipe at index %d', i)
-                                            mq.TLO.Window('TradeskillWnd/COMBW_RecipeList').Select(i)()
-                                            mq.delay(1000)
-                                            break
-                                        end
+                            printf('  Window reopened, searching for recipe...')
+                            mq.cmd('/nomodkey /notify TradeskillWnd COMBW_SearchTextEdit leftmouseup')
+                            mq.delay(100)
+                            mq.TLO.Window('TradeskillWnd/COMBW_SearchTextEdit').SetText(selectedRecipe.Recipe)()
+                            mq.delay(100)
+                            mq.delay(5000, function() return mq.TLO.Window('TradeskillWnd/COMBW_SearchButton').Enabled() end)
+                            mq.cmd('/nomodkey /notify TradeskillWnd COMBW_SearchButton leftmouseup')
+                            mq.delay(1000)
+                            
+                            local listSize = mq.TLO.Window('TradeskillWnd/COMBW_RecipeList').Items()
+                            if listSize > 0 then
+                                for i = 1, listSize do
+                                    local recipeName = mq.TLO.Window('TradeskillWnd/COMBW_RecipeList').List(i)()
+                                    if recipeName == selectedRecipe.Recipe then
+                                        printf('  Selecting recipe at index %d', i)
+                                        mq.TLO.Window('TradeskillWnd/COMBW_RecipeList').Select(i)()
+                                        mq.delay(1000)
+                                        break
                                     end
                                 end
-                                
-                                mq.delay(2000, function() return mq.TLO.Window('TradeskillWnd/CombineButton').Enabled() end)
-                                if mq.TLO.Window('TradeskillWnd/CombineButton').Enabled() then
-                                    printf('  Ready to continue crafting')
-                                else
-                                    printf('  WARNING: Combine button not ready, stopping')
-                                    crafting.FailedMessage = 'Could not resume after auto-sell'
-                                    return
-                                end
+                            end
+                            
+                            mq.delay(2000, function() return mq.TLO.Window('TradeskillWnd/CombineButton').Enabled() end)
+                            if mq.TLO.Window('TradeskillWnd/CombineButton').Enabled() then
+                                printf('  Ready to continue crafting')
                             else
-                                printf('  ERROR: Could not reopen tradeskill window')
-                                crafting.FailedMessage = 'Could not reopen window after auto-sell'
+                                printf('  WARNING: Combine button not ready, stopping')
+                                crafting.FailedMessage = 'Could not resume after auto-sell'
                                 return
                             end
                         else
