@@ -467,7 +467,7 @@ return {
             Recipe='Mithril Fletchings',
             Trivial=34,
             Materials={'Small Brick of Mithril','Mithril Working Knife'},
-            Container='Fletching Kit',
+            Container='Feir`Dal Fletching Kit',
             Tradeskill='Fletching',
         },
         ['Mithril Working Knife'] = {
