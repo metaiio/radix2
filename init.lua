@@ -1,4 +1,4 @@
-﻿local stuckDetection = {
+local stuckDetection = {
     lastPos = {x = 0, y = 0, z = 0},
     lastMoveTime = os.clock() * 1000,
     stuckCount = 0,
@@ -121,6 +121,10 @@ local function RecipeTreeNode(recipe, tradeskill, tradeskillName, idx)
     local displayName = recipe.Recipe
     if recipe.Tradeskill and recipe.Tradeskill ~= tradeskillName then
         displayName = string.format('%s [%s]', recipe.Recipe, recipe.Tradeskill:upper())
+    end
+    -- Add zone info if recipe requires a different zone
+    if recipe.Zone and recipe.Zone ~= mq.TLO.Zone.ShortName() then
+        displayName = displayName .. ' {' .. recipe.Zone .. '}'
     end
     
     local expanded = ImGui.TreeNode(('%s (Trivial: %s) (Qty: %s)###%s%s'):format(displayName, recipe.Trivial, mq.TLO.FindItemCount('='..recipe.Recipe)(), recipe.Recipe, idx))
@@ -1687,9 +1691,13 @@ end
 
 local function craftAtStation()
     if not selectedRecipe then return end
-    printf('Moving to crafting station')
     
-    mq.cmdf('/nav loc '..recipes.Stations[mq.TLO.Zone.ShortName()][selectedRecipe.Container]..' log=off')
+    local stationName = selectedRecipe.Container
+    local stationLoc = recipes.Stations[mq.TLO.Zone.ShortName()][stationName]
+    
+    printf('Moving to crafting station: %s', stationName)
+    
+    mq.cmdf('/nav loc %s log=off', stationLoc)
     mq.delay(250)
     
     stuckDetection.reset()
@@ -1714,12 +1722,26 @@ local function craftAtStation()
         
         mq.delay(100)
     end
-    printf('Opening crafting station')
+    
     mq.cmd('/itemtar')
-    mq.delay(5)
+    mq.delay(250)
     mq.cmd('/click left item')
-    mq.delay(500, function() return mq.TLO.Window('TradeskillWnd').Open() end)
-    if not mq.TLO.Window('TradeskillWnd').Open() then return end
+    mq.delay(1000, function() return mq.TLO.Window('TradeskillWnd').Open() end)
+    
+    if not mq.TLO.Window('TradeskillWnd').Open() then 
+        printf('  ERROR: Could not open tradeskill window')
+        printf('  Retrying...')
+        mq.delay(500)
+        mq.cmd('/click left item')
+        mq.delay(1000, function() return mq.TLO.Window('TradeskillWnd').Open() end)
+        
+        if not mq.TLO.Window('TradeskillWnd').Open() then
+            crafting.FailedMessage = 'Could not open crafting station'
+            crafting.Status = false
+            return
+        end
+    end
+    
     craftInTradeskillWindow('Enviro')
     clearCursor()
 end
