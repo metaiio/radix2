@@ -25,7 +25,45 @@ local meta = {version='0.2',name='radix'}
 local openGUI, shouldDrawGUI = true, true
 
 local ingredientsArray = {}
-local invSlotContainers = {['Fletching Kit'] = true, ['Feir`Dal Fletching Kit'] = true, ['Jeweler\'s Kit'] = true, ['Mixing Bowl'] = true, ['Essence Fusion Chamber'] = true, ['Medicine Bag'] = true}
+local invSlotContainers = {['Fletching Kit'] = true, ['Feir`Dal Fletching Kit'] = true, ['Jeweler\'s Kit'] = true, ['Deluxe Jeweler\'s Kit'] = true, ['Mixing Bowl'] = true, ['Essence Fusion Chamber'] = true, ['Medicine Bag'] = true, ['Reinforced Medicine Bag'] = true, ['Foldable Medicine Bag'] = true, ['Foldable Reinforced Medicine Bag'] = true, ['Mortar and Pestle'] = true, ['Acrylia Mortar and Pestle'] = true, ['Collapsible Mortar and Pestle'] = true}
+
+-- Container equivalents - any of these can be used interchangeably for recipes
+local containerEquivalents = {
+    ['Medicine Bag'] = {'Medicine Bag', 'Reinforced Medicine Bag', 'Foldable Medicine Bag', 'Foldable Reinforced Medicine Bag'},
+    ['Reinforced Medicine Bag'] = {'Medicine Bag', 'Reinforced Medicine Bag', 'Foldable Medicine Bag', 'Foldable Reinforced Medicine Bag'},
+    ['Foldable Medicine Bag'] = {'Medicine Bag', 'Reinforced Medicine Bag', 'Foldable Medicine Bag', 'Foldable Reinforced Medicine Bag'},
+    ['Foldable Reinforced Medicine Bag'] = {'Medicine Bag', 'Reinforced Medicine Bag', 'Foldable Medicine Bag', 'Foldable Reinforced Medicine Bag'},
+    ['Fletching Kit'] = {'Fletching Kit', 'Feir`Dal Fletching Kit'},
+    ['Feir`Dal Fletching Kit'] = {'Fletching Kit', 'Feir`Dal Fletching Kit'},
+    ['Jeweler\'s Kit'] = {'Jeweler\'s Kit', 'Deluxe Jeweler\'s Kit'},
+    ['Deluxe Jeweler\'s Kit'] = {'Jeweler\'s Kit', 'Deluxe Jeweler\'s Kit'},
+    ['Mortar and Pestle'] = {'Mortar and Pestle', 'Acrylia Mortar and Pestle', 'Collapsible Mortar and Pestle'},
+    ['Acrylia Mortar and Pestle'] = {'Mortar and Pestle', 'Acrylia Mortar and Pestle', 'Collapsible Mortar and Pestle'},
+    ['Collapsible Mortar and Pestle'] = {'Mortar and Pestle', 'Acrylia Mortar and Pestle', 'Collapsible Mortar and Pestle'},
+}
+
+-- Find a usable container from the equivalents list - checks TOP LEVEL SLOTS FIRST
+local function findUsableContainer(containerName)
+    local equivalents = containerEquivalents[containerName] or {containerName}
+    
+    -- Check each top-level inventory slot (pack1 through pack10) for matching container
+    for packNum = 1, 10 do
+        local packItem = mq.TLO.InvSlot('pack' .. packNum).Item
+        if packItem() then
+            local packItemName = packItem.Name()
+            -- Check if this pack slot contains one of our equivalent containers
+            for _, equiv in ipairs(equivalents) do
+                if packItemName == equiv then
+                    printf('  Found %s in top-level slot pack%d', equiv, packNum)
+                    return equiv, packItem
+                end
+            end
+        end
+    end
+    
+    -- No top-level container found
+    return nil, nil
+end
 
 local ingredientFilter = ''
 local filteredIngredients = {}
@@ -87,6 +125,15 @@ end
 local selectedTradeskill = nil
 local selectedRecipe = nil
 local maxPossibleCombines = nil
+
+-- Helper function to get EQ skill name from our tradeskill name
+local function getEQSkillName(tradeskill)
+    if tradeskill == 'Poison Making' then
+        return 'Make Poison'
+    end
+    return tradeskill
+end
+
 local buying = {
     Recipe = '',
     Qty = 1000,
@@ -276,7 +323,7 @@ local function popStyles()
     ImGui.PopStyleVar(1)
 end
 
-local tradeskills = {'Baking','Blacksmithing','Brewing','Fletching','Jewelry Making','Pottery','Tailoring','Alchemy'}
+local tradeskills = {'Baking','Blacksmithing','Brewing','Fletching','Jewelry Making','Pottery','Tailoring','Alchemy','Poison Making'}
 local function radixGUI()
     ImGui.SetNextWindowSize(ImVec2(800,500), ImGuiCond.FirstUseEver)
     pushStyle()
@@ -284,8 +331,15 @@ local function radixGUI()
     if shouldDrawGUI then
         if ImGui.BeginTabBar('##TradeskillTabs') then
             for _,tradeskill in ipairs(tradeskills) do
-                if tradeskill ~= 'Alchemy' or mq.TLO.Me.Class.ShortName() == 'SHM' then
-                    local currentSkill = (tradeskill == 'Radix' and 300) or mq.TLO.Me.Skill(tradeskill)() or 0
+                -- Class restrictions: Alchemy = Shaman only, Poison Making = Rogue only
+                local showTab = true
+                if tradeskill == 'Alchemy' and mq.TLO.Me.Class.ShortName() ~= 'SHM' then
+                    showTab = false
+                elseif tradeskill == 'Poison Making' and mq.TLO.Me.Class.ShortName() ~= 'ROG' then
+                    showTab = false
+                end
+                if showTab then
+                    local currentSkill = (tradeskill == 'Radix' and 300) or mq.TLO.Me.Skill(getEQSkillName(tradeskill))() or 0
                     ImGui.PushStyleColor(ImGuiCol.Text, currentSkill == 300 and 0 or 1, currentSkill == 300 and 1 or 0, 0, 1)
                     local label
                     if tradeskill == 'Radix' then
@@ -1055,19 +1109,42 @@ local function shouldCraft()
     end
     
     if invSlotContainers[selectedRecipe.Container] then
-        local containerCount = mq.TLO.FindItemCount('='..selectedRecipe.Container)()
-        local containerItem = mq.TLO.FindItem('='..selectedRecipe.Container)
+        -- Check for equivalent containers (e.g., any Medicine Bag variant) in TOP LEVEL slots only
+        local foundContainer, containerItem = findUsableContainer(selectedRecipe.Container)
         
-        if containerCount == 0 then
-            printf('Recipe requires container: %s (not found)', selectedRecipe.Container)
-            printf('Container needs to be purchased or obtained')
-            crafting.FailedMessage = ('Missing container: %s - click "Buy Mats" to purchase'):format(selectedRecipe.Container)
-            return false
-        elseif containerItem.ItemSlot2() ~= -1 then
-            printf('Recipe requires container in top level inventory slot: %s', selectedRecipe.Container)
-            crafting.FailedMessage = ('Container must be in top level inventory slot: %s'):format(selectedRecipe.Container)
+        if not foundContainer then
+            -- No top-level container found - check if they have one nested inside a bag
+            local equivalents = containerEquivalents[selectedRecipe.Container] or {selectedRecipe.Container}
+            local nestedContainer = nil
+            
+            for _, equiv in ipairs(equivalents) do
+                if mq.TLO.FindItemCount('='..equiv)() > 0 then
+                    nestedContainer = equiv
+                    break
+                end
+            end
+            
+            if nestedContainer then
+                printf('Recipe requires container in top level inventory slot')
+                printf('  Found: %s (but it is inside another bag)', nestedContainer)
+                printf('  Move it to a top level inventory slot to use it')
+                crafting.FailedMessage = ('Move %s to top level inventory slot'):format(nestedContainer)
+            else
+                printf('Recipe requires container: %s (not found)', selectedRecipe.Container)
+                if #equivalents > 1 then
+                    printf('  (Also accepts: %s)', table.concat(equivalents, ', '))
+                end
+                printf('Container needs to be purchased or obtained')
+                crafting.FailedMessage = ('Missing container: %s - click "Buy Mats" to purchase'):format(selectedRecipe.Container)
+            end
             return false
         end
+        
+        -- Store the found container for use in crafting
+        if foundContainer ~= selectedRecipe.Container then
+            printf('Using equivalent container: %s (instead of %s)', foundContainer, selectedRecipe.Container)
+        end
+        crafting.UsableContainer = foundContainer
     end
     
     local numMatsNeeded = {}
@@ -1153,7 +1230,7 @@ local function craftInExperimental(pack)
             return 
         end
         
-        if crafting.StopAtTrivial and (mq.TLO.Me.Skill(selectedTradeskill or '')() >= selectedRecipe.Trivial or mq.TLO.Me.Skill(selectedTradeskill or '')() == 300) then
+        if crafting.StopAtTrivial and (mq.TLO.Me.Skill(getEQSkillName(selectedTradeskill or ''))() >= selectedRecipe.Trivial or mq.TLO.Me.Skill(getEQSkillName(selectedTradeskill or ''))() == 300) then
             crafting.SuccessMessage = 'Reached trivial for recipe!'
             printf('Reached trivial - stopping')
             return
@@ -1304,21 +1381,56 @@ local function craftInExperimental(pack)
     printf('===========================================')
 end
 
+-- Helper function to safely set search text in tradeskill window
+local function setTradeskillSearchText(recipeName)
+    -- Click search box to give it focus
+    mq.cmd('/nomodkey /notify TradeskillWnd COMBW_SearchTextEdit leftmouseup')
+    mq.delay(300)
+    
+    -- Clear existing text using select all + delete
+    mq.cmd('/keypress ctrl+a')
+    mq.delay(100)
+    mq.cmd('/keypress delete')
+    mq.delay(200)
+    
+    -- Type the recipe name using /type command (safer than SetText)
+    mq.cmdf('/type %s', recipeName)
+    mq.delay(500)
+end
+
 local function craftInTradeskillWindow(pack)
     if not selectedRecipe then return end
     
     printf('Opening tradeskill window for recipe: %s', selectedRecipe.Recipe)
     
+    -- Wait for tradeskill window to be fully ready
+    mq.delay(500)
+    if not mq.TLO.Window('TradeskillWnd').Open() then
+        printf('ERROR: Tradeskill window not open')
+        return
+    end
+    
     local recipeExists = mq.TLO.Window('TradeskillWnd/COMBW_RecipeList').List(selectedRecipe.Recipe)()
     
     if not recipeExists then
         printf('Recipe not in list, searching...')
-        mq.cmd('/nomodkey /notify TradeskillWnd COMBW_SearchTextEdit leftmouseup')
-        mq.delay(50)
-        mq.TLO.Window('TradeskillWnd/COMBW_SearchTextEdit').SetText(selectedRecipe.Recipe)()
-        mq.delay(50)
         
-        mq.delay(30000, function() return mq.TLO.Window('TradeskillWnd/COMBW_SearchButton').Enabled() end)
+        -- Safely clear and set search text
+        local searchBox = mq.TLO.Window('TradeskillWnd/COMBW_SearchTextEdit')
+        if not searchBox() then
+            printf('ERROR: Search box not found')
+            return
+        end
+        
+        -- Use helper function for safe text input
+        setTradeskillSearchText(selectedRecipe.Recipe)
+        
+        -- Wait for search button to be enabled and click it
+        mq.delay(5000, function() return mq.TLO.Window('TradeskillWnd/COMBW_SearchButton').Enabled() end)
+        if not mq.TLO.Window('TradeskillWnd/COMBW_SearchButton').Enabled() then
+            printf('ERROR: Search button not enabled')
+            return
+        end
         mq.cmd('/nomodkey /notify TradeskillWnd COMBW_SearchButton leftmouseup')
         mq.delay(1000)
         
@@ -1424,7 +1536,7 @@ local function craftInTradeskillWindow(pack)
         end
         printf('  Check 1: Status OK')
         
-        if crafting.StopAtTrivial and (mq.TLO.Me.Skill(selectedTradeskill or '')() >= selectedRecipe.Trivial or mq.TLO.Me.Skill(selectedTradeskill or '')() == 300) then
+        if crafting.StopAtTrivial and (mq.TLO.Me.Skill(getEQSkillName(selectedTradeskill or ''))() >= selectedRecipe.Trivial or mq.TLO.Me.Skill(getEQSkillName(selectedTradeskill or ''))() == 300) then
             crafting.SuccessMessage = 'Reached trivial for recipe!'
             printf('STOPPED: Reached trivial')
             return
@@ -1443,10 +1555,7 @@ local function craftInTradeskillWindow(pack)
                     end
                     
                     printf('  Window reopened, searching for recipe...')
-                    mq.cmd('/nomodkey /notify TradeskillWnd COMBW_SearchTextEdit leftmouseup')
-                    mq.delay(100)
-                    mq.TLO.Window('TradeskillWnd/COMBW_SearchTextEdit').SetText(selectedRecipe.Recipe)()
-                    mq.delay(100)
+                    setTradeskillSearchText(selectedRecipe.Recipe)
                     mq.delay(5000, function() return mq.TLO.Window('TradeskillWnd/COMBW_SearchButton').Enabled() end)
                     mq.cmd('/nomodkey /notify TradeskillWnd COMBW_SearchButton leftmouseup')
                     mq.delay(1000)
@@ -1580,10 +1689,7 @@ local function craftInTradeskillWindow(pack)
                             end
                             
                             printf('  Window reopened, searching for recipe...')
-                            mq.cmd('/nomodkey /notify TradeskillWnd COMBW_SearchTextEdit leftmouseup')
-                            mq.delay(100)
-                            mq.TLO.Window('TradeskillWnd/COMBW_SearchTextEdit').SetText(selectedRecipe.Recipe)()
-                            mq.delay(100)
+                            setTradeskillSearchText(selectedRecipe.Recipe)
                             mq.delay(5000, function() return mq.TLO.Window('TradeskillWnd/COMBW_SearchButton').Enabled() end)
                             mq.cmd('/nomodkey /notify TradeskillWnd COMBW_SearchButton leftmouseup')
                             mq.delay(1000)
@@ -1642,10 +1748,13 @@ end
 local function craftInInvSlot()
     if not selectedRecipe then return end
     
+    -- Use the usable container found in shouldCraft, or fall back to recipe container
+    local containerName = crafting.UsableContainer or selectedRecipe.Container
+    
     -- Determine container pack FIRST, before checking if window is open
-    local container_item = mq.TLO.FindItem('='..selectedRecipe.Container)
+    local container_item = mq.TLO.FindItem('='..containerName)
     if not container_item() then
-        printf('ERROR: Container %s not found', selectedRecipe.Container)
+        printf('ERROR: Container %s not found', containerName)
         return
     end
     
@@ -1657,11 +1766,11 @@ local function craftInInvSlot()
     end
     
     if container_item.ItemSlot2() ~= -1 then
-        mq.cmdf('/nomodkey /ctrlkey /itemnotify "%s" leftmouseup', selectedRecipe.Container)
+        mq.cmdf('/nomodkey /ctrlkey /itemnotify "%s" leftmouseup', containerName)
         waitForCursor()
         clearCursor()
 
-        container_item = mq.TLO.FindItem('='..selectedRecipe)
+        container_item = mq.TLO.FindItem('='..containerName)
         if container_item.ItemSlot2() ~= -1 then
             printf('No top level inventory slot available for container')
             return
