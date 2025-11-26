@@ -448,33 +448,33 @@ return {
             Container='Jeweler\'s Kit',
             Tradeskill='Jewelry Making',
         },
-        -- Fletching
+        -- Fletching (Mithril subcombines)
         ['Mithril Arrow Heads'] = {
             Recipe='Mithril Arrow Heads',
             Trivial=42,
             Materials={'Small Brick of Mithril','File','Water Flask'},
-            Container='Feir`Dal Forge',
+            Container='Forge',
             Tradeskill='Blacksmithing',
         },
         ['Mithril Bundled Arrow Shafts'] = {
             Recipe='Mithril Bundled Arrow Shafts',
             Trivial=42,
             Materials={'Large Brick of Mithril','Arrow Shaft Mold','File','Water Flask'},
-            Container='Feir`Dal Forge',
+            Container='Forge',
             Tradeskill='Blacksmithing',
         },
         ['Mithril Fletchings'] = {
             Recipe='Mithril Fletchings',
             Trivial=34,
             Materials={'Small Brick of Mithril','Mithril Working Knife'},
-            Container='Feir`Dal Fletching Kit',
+            Container='Fletching Kit',
             Tradeskill='Fletching',
         },
         ['Mithril Working Knife'] = {
             Recipe='Mithril Working Knife',
             Trivial=42,
             Materials={'Small Brick of Mithril','Hilt Mold','Water Flask','Dagger Blade Mold'},
-            Container='Feir`Dal Forge',
+            Container='Forge',
             Tradeskill='Blacksmithing',
             Tool=true,
         },
@@ -679,7 +679,7 @@ return {
             ['Brew Barrel'] = '33.07 113.01 4.30',
         },
         ['gfaydark'] = {
-            ['Feir`Dal Forge'] = '-245 61 118',
+            ['Feir`Dal Forge'] = '-485.70 97.95 161.43',
         },
     }
 }
