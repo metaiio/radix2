@@ -137,7 +137,15 @@ local function RecipeTreeNode(recipe, tradeskill, tradeskillName, idx)
             if recipes.Subcombines[material] then
                 RecipeTreeNode(recipes.Subcombines[material], tradeskill, tradeskillName, idx+i)
             else
-                ImGui.Text('%s%s', material, recipes.Materials[material] and ' - ' .. recipes.Materials[material].Location or '')
+                local matInfo = recipes.Materials[material]
+                local locationText = ''
+                if matInfo then
+                    locationText = ' - ' .. matInfo.Location
+                    if matInfo.Zone and matInfo.Zone ~= mq.TLO.Zone.ShortName() then
+                        locationText = locationText .. ' [' .. matInfo.Zone .. ']'
+                    end
+                end
+                ImGui.Text('%s%s', material, locationText)
                 ImGui.SameLine()
                 ImGui.TextColored(1,1,0,1,'(Qty: %s)', mq.TLO.FindItemCount('='..material)())
             end
@@ -491,6 +499,106 @@ local function clearCursor(num)
     return true
 end
 
+-- More thorough cursor clearing for after combines - handles tools and salvaged items
+local function clearCursorAfterCombine(recipeName)
+    local itemsCleared = 0
+    local maxItems = 10  -- Safety limit - most we'd expect is crafted item + tool + maybe salvage
+    local maxWaitTime = 5000  -- 5 seconds max to wait for items to appear
+    local waitInterval = 250  -- Check every 250ms
+    local totalWaited = 0
+    
+    -- First, wait a moment for items to start appearing on cursor
+    mq.delay(500)
+    
+    -- Keep clearing until cursor stays empty for a bit
+    local emptyChecks = 0
+    local requiredEmptyChecks = 3  -- Cursor must be empty for 3 consecutive checks
+    
+    while emptyChecks < requiredEmptyChecks and totalWaited < maxWaitTime do
+        if mq.TLO.Cursor() then
+            emptyChecks = 0  -- Reset empty counter
+            local itemOnCursor = mq.TLO.Cursor.Name()
+            local stackCount = mq.TLO.Cursor.Stack() or 1
+            
+            printf('  [Cursor] Found: %s (x%d) - moving to inventory', itemOnCursor, stackCount)
+            
+            mq.cmd('/autoinv')
+            mq.delay(500)  -- Wait for autoinv to process
+            
+            -- If still on cursor, try again with longer delay
+            if mq.TLO.Cursor() then
+                mq.delay(500)
+                mq.cmd('/autoinv')
+                mq.delay(500)
+            end
+            
+            -- Count it if it cleared
+            if not mq.TLO.Cursor() or mq.TLO.Cursor.Name() ~= itemOnCursor then
+                itemsCleared = itemsCleared + 1
+            end
+            
+            if itemsCleared >= maxItems then
+                printf('  [Cursor] WARNING: Cleared %d items - stopping to prevent infinite loop', itemsCleared)
+                break
+            end
+        else
+            -- Cursor is empty - increment check counter
+            emptyChecks = emptyChecks + 1
+            mq.delay(waitInterval)
+            totalWaited = totalWaited + waitInterval
+        end
+    end
+    
+    -- Final verification
+    if mq.TLO.Cursor() then
+        local stuckItem = mq.TLO.Cursor.Name()
+        printf('  [Cursor] WARNING: Item still on cursor after clearing: %s', stuckItem)
+        printf('  [Cursor] Attempting forced clear...')
+        
+        for i = 1, 5 do
+            mq.cmd('/autoinv')
+            mq.delay(1000)
+            if not mq.TLO.Cursor() then
+                printf('  [Cursor] Forced clear successful on attempt %d', i)
+                itemsCleared = itemsCleared + 1
+                break
+            end
+        end
+        
+        if mq.TLO.Cursor() then
+            printf('  [Cursor] ERROR: Could not clear cursor - inventory may be full!')
+            return false, itemsCleared
+        end
+    end
+    
+    if itemsCleared > 0 then
+        printf('  [Cursor] Cleared %d item(s) from cursor', itemsCleared)
+    end
+    
+    return true, itemsCleared
+end
+
+-- Verify cursor is empty before placing materials - prevents placing on top of stuck items
+local function ensureCursorEmpty()
+    if not mq.TLO.Cursor() then
+        return true
+    end
+    
+    printf('  [Cursor] WARNING: Cursor not empty before material placement!')
+    printf('  [Cursor] Item on cursor: %s', mq.TLO.Cursor.Name())
+    
+    -- Try to clear it
+    local success = clearCursor(5)
+    
+    if not success then
+        printf('  [Cursor] ERROR: Could not clear cursor before placing materials!')
+        return false
+    end
+    
+    printf('  [Cursor] Cursor cleared successfully')
+    return true
+end
+
 local function reopenContainerWithRetry(containerName, pack)
     local maxAttempts = 5
     local attempt = 0
@@ -748,26 +856,51 @@ local function buy()
     end
     
     local materialsByMerchant = {}
+    local outOfZoneMaterials = {}  -- Track materials we can't buy in this zone
+    
     for material,count in pairs(numMatsNeeded) do
         local mat = recipes.Materials[material]
-        if mat and mat.SourceType == 'Vendor' and (not mat.Zone or mq.TLO.Zone.ShortName() == mat.Zone) then
-            local merchantName = mat.Location
-            if not materialsByMerchant[merchantName] then
-                materialsByMerchant[merchantName] = {
-                    tools = {},
-                    nonTools = {}
-                }
-            end
-            
-            if mat.Tool then
-                table.insert(materialsByMerchant[merchantName].tools, {
+        if mat and mat.SourceType == 'Vendor' then
+            if mat.Zone and mq.TLO.Zone.ShortName() ~= mat.Zone then
+                -- Material is in a different zone - can't buy here
+                table.insert(outOfZoneMaterials, {
                     name = material,
+                    zone = mat.Zone,
+                    vendor = mat.Location,
                     count = count
                 })
             else
-                materialsByMerchant[merchantName].nonTools[material] = buying.Qty * count
+                -- Material is in current zone or no zone specified
+                local merchantName = mat.Location
+                if not materialsByMerchant[merchantName] then
+                    materialsByMerchant[merchantName] = {
+                        tools = {},
+                        nonTools = {}
+                    }
+                end
+                
+                if mat.Tool then
+                    table.insert(materialsByMerchant[merchantName].tools, {
+                        name = material,
+                        count = count
+                    })
+                else
+                    materialsByMerchant[merchantName].nonTools[material] = buying.Qty * count
+                end
             end
         end
+    end
+    
+    -- Warn about out-of-zone materials
+    if #outOfZoneMaterials > 0 then
+        printf('========================================')
+        printf('WARNING: Some materials require travel!')
+        printf('========================================')
+        for _, item in ipairs(outOfZoneMaterials) do
+            printf('  %s x%d - %s in %s', item.name, buying.Qty * item.count, item.vendor, item.zone)
+        end
+        printf('Travel to those zones to buy these items.')
+        printf('========================================')
     end
     
     for merchantName, materials in pairs(materialsByMerchant) do
@@ -1057,12 +1190,26 @@ local function craftInExperimental(pack)
         end
         
         printf('Combine %d/%d - Placing materials...', crafting.NumMade + 1, buying.Qty)
-        clearCursor(#selectedRecipe.Materials)
+        
+        -- Ensure cursor is empty before starting material placement
+        if not ensureCursorEmpty() then
+            printf('  ERROR: Could not clear cursor before placing materials')
+            crafting.FailedMessage = 'Cursor stuck before material placement'
+            return
+        end
         
         for i, mat in ipairs(selectedRecipe.Materials) do
             printf('  Placing material %d: %s', i, mat)
             
-            if mq.TLO.Cursor() then clearCursor() end
+            -- Verify cursor empty before each material
+            if mq.TLO.Cursor() then 
+                printf('    WARNING: Cursor has item before pickup, clearing...')
+                if not clearCursor(5) then
+                    printf('    ERROR: Could not clear cursor')
+                    crafting.FailedMessage = 'Cursor stuck during material placement'
+                    return
+                end
+            end
             
             mq.cmdf('/nomodkey /ctrlkey /itemnotify "%s" leftmouseup', mat)
             waitForCursor()
@@ -1084,8 +1231,16 @@ local function craftInExperimental(pack)
         
         printf('  Performing combine...')
         mq.cmdf('/combine %s', pack)
-        waitForCursor()
-        clearCursor()
+        
+        -- Wait for combine to process then thoroughly clear cursor
+        mq.delay(1000)
+        local success, itemsCleared = clearCursorAfterCombine(selectedRecipe.Recipe)
+        
+        if not success then
+            printf('  ERROR: Could not clear cursor after combine')
+            crafting.FailedMessage = 'Cursor stuck after combine - inventory may be full'
+            return
+        end
         
         crafting.NumMade = crafting.NumMade + 1
         printf('  Combine complete! Total made: %d', crafting.NumMade)
@@ -1341,21 +1496,32 @@ local function craftInTradeskillWindow(pack)
             mq.cmdf('/nomodkey /notify TradeskillWnd CombineButton leftmouseup')
             
             if not crafting.Fast then
-                printf('  Waiting for cursor...')
-                waitForCursor()
-                printf('  Clearing cursor...')
-                clearCursor()
-                printf('  Ensuring cursor is empty...')
-                clearCursor()  -- Second clear for recipes that return multiple items
-                clearCursor()  -- Third clear for tools that take longer to return
+                printf('  Waiting for combine result...')
+                mq.delay(1000)  -- Initial delay for combine to process
+                
+                -- Use thorough cursor clearing that handles tools and salvage
+                local success, itemsCleared = clearCursorAfterCombine(selectedRecipe.Recipe)
+                
+                if not success then
+                    printf('  ERROR: Could not clear cursor after combine')
+                    crafting.FailedMessage = 'Cursor stuck after combine - inventory may be full'
+                    return
+                end
+                
                 printf('  Doing events...')
                 mq.doevents()
                 
                 -- Verify materials are actually missing before stopping
-                if crafting.OutOfMats and not mq.TLO.Cursor() then
+                if crafting.OutOfMats then
                     -- Double-check by verifying combine button after longer delay for tools
                     mq.delay(1500)  -- Longer wait for tools to return to inventory
-                    clearCursor()  -- One more clear to be absolutely sure
+                    
+                    -- One more cursor check in case tool arrived late
+                    if mq.TLO.Cursor() then
+                        printf('  Late item on cursor detected, clearing...')
+                        clearCursorAfterCombine(selectedRecipe.Recipe)
+                    end
+                    
                     mq.delay(500)   -- Final UI update delay
                     local combineEnabled = mq.TLO.Window('TradeskillWnd/CombineButton').Enabled()
                     if not combineEnabled then
@@ -1369,8 +1535,17 @@ local function craftInTradeskillWindow(pack)
                     crafting.OutOfMats = false
                 end
             else
+                -- Fast mode - still need to handle tools and multiple items
+                mq.delay(250)  -- Brief delay for items to appear
                 mq.cmd('/autoinv')
+                mq.delay(250)
                 mq.cmd('/autoinv')
+                mq.delay(250)
+                -- One more for tools that return after crafted item
+                if mq.TLO.Cursor() then
+                    mq.cmd('/autoinv')
+                    mq.delay(250)
+                end
             end
             
             crafting.NumMade = crafting.NumMade + 1
@@ -1733,7 +1908,22 @@ local function craft()
                     elseif invSlotContainers[selectedRecipe.Container] then
                         craftInInvSlot()
                     else
-                        printf('ERROR: Unknown container: %s', selectedRecipe.Container)
+                        -- Check if the container is a station in another zone
+                        local foundInZone = nil
+                        for zoneName, stations in pairs(recipes.Stations) do
+                            if stations[selectedRecipe.Container] then
+                                foundInZone = zoneName
+                                break
+                            end
+                        end
+                        
+                        if foundInZone then
+                            printf('ERROR: %s requires %s (in %s)', selectedRecipe.Recipe, selectedRecipe.Container, foundInZone)
+                            printf('Travel to %s to craft this subcombine.', foundInZone)
+                            crafting.FailedMessage = 'Station not in this zone - go to ' .. foundInZone
+                        else
+                            printf('ERROR: Unknown container: %s', selectedRecipe.Container)
+                        end
                         crafting.Status = false
                         selectedRecipe = originalRecipe
                         buying.Qty = originalQty
@@ -1773,6 +1963,35 @@ local function craft()
     elseif invSlotContainers[selectedRecipe.Container] then
         craftInInvSlot()
     else
+        -- Check if the container is a station in another zone
+        local foundInZone = nil
+        for zoneName, stations in pairs(recipes.Stations) do
+            if stations[selectedRecipe.Container] then
+                foundInZone = zoneName
+                break
+            end
+        end
+        
+        if foundInZone then
+            printf('========================================')
+            printf('ERROR: Crafting station not in this zone!')
+            printf('========================================')
+            printf('  Recipe: %s', selectedRecipe.Recipe)
+            printf('  Requires: %s', selectedRecipe.Container)
+            printf('  Available in: %s', foundInZone)
+            printf('  Current zone: %s', mq.TLO.Zone.ShortName())
+            printf('========================================')
+            printf('Travel to %s to craft this recipe.', foundInZone)
+            crafting.FailedMessage = 'Station not in this zone - go to ' .. foundInZone
+        else
+            printf('========================================')
+            printf('ERROR: Unknown crafting container!')
+            printf('========================================')
+            printf('  Recipe: %s', selectedRecipe.Recipe)
+            printf('  Container: %s', selectedRecipe.Container)
+            printf('  This container is not defined in recipes.')
+            crafting.FailedMessage = 'Unknown container: ' .. selectedRecipe.Container
+        end
     end
     clearCursor()
     crafting.Status = false
