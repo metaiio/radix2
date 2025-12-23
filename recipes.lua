@@ -179,6 +179,12 @@ return {
     },
     ['Pottery'] = {
         {
+            Recipe='Large Block of Clay',
+            Trivial=21,
+            Materials={'Block of Clay','Block of Clay','Block of Clay','Water Flask'},
+            Container='Pottery Wheel',
+        },
+        {
             Recipe='Sealed Poison Vial (Crow\'s Special Brew)',
             Trivial=188,
             Materials={'Crow\'s Special Brew','Sealed Vial Sketch','Small Block of Clay','Water Flask'},
@@ -396,6 +402,68 @@ return {
             Container='Essence Fusion Chamber',
         },
     },
+    ['Enchanting'] = {
+        -- Clay
+        {
+            Recipe='Large Block of Magic Clay',
+            Trivial=0,
+            Materials={'Large Block of Clay'},
+            Spell='Mass Enchant Clay',
+            AlternateSpell='Greater Mass Enchant Clay',
+            YieldsRegular=5,   -- Regular Mass spell produces 5 per cast
+            YieldsGreater=20,  -- Greater Mass spell produces 20 per cast
+        },
+        -- Gold
+        {
+            Recipe='Enchanted Gold Bar',
+            Trivial=0,
+            Materials={'Gold Bar'},
+            Spell='Mass Enchant Gold',
+            AlternateSpell='Greater Mass Enchant Gold',
+            YieldsRegular=5,
+            YieldsGreater=20,
+        },
+        -- Silver
+        {
+            Recipe='Enchanted Silver Bar',
+            Trivial=0,
+            Materials={'Silver Bar'},
+            Spell='Mass Enchant Silver',
+            AlternateSpell='Greater Mass Enchant Silver',
+            YieldsRegular=5,
+            YieldsGreater=20,
+        },
+        -- Platinum
+        {
+            Recipe='Enchanted Platinum Bar',
+            Trivial=0,
+            Materials={'Platinum Bar'},
+            Spell='Mass Enchant Platinum',
+            AlternateSpell='Greater Mass Enchant Platinum',
+            YieldsRegular=5,
+            YieldsGreater=20,
+        },
+        -- Electrum
+        {
+            Recipe='Enchanted Electrum Bar',
+            Trivial=0,
+            Materials={'Electrum Bar'},
+            Spell='Mass Enchant Electrum',
+            AlternateSpell='Greater Mass Enchant Electrum',
+            YieldsRegular=5,
+            YieldsGreater=20,
+        },
+        -- Velium
+        {
+            Recipe='Enchanted Velium Bar',
+            Trivial=0,
+            Materials={'Velium Bar'},
+            Spell='Mass Enchant Velium',
+            AlternateSpell='Greater Mass Enchant Velium',
+            YieldsRegular=5,
+            YieldsGreater=20,
+        },
+    },
     ['Subcombines'] = {
         -- Radix
         ['Elemental Forging Temper'] = {
@@ -454,6 +522,13 @@ return {
             Recipe='Unfired Ceramic Lining',
             Trivial=36,
             Materials={'Water Flask','Small Block of Clay','Ceramic Lining Sketch'},
+            Container='Pottery Wheel',
+            Tradeskill='Pottery',
+        },
+        ['Large Block of Clay'] = {
+            Recipe='Large Block of Clay',
+            Trivial=21,
+            Materials={'Block of Clay','Block of Clay','Block of Clay','Water Flask'},
             Container='Pottery Wheel',
             Tradeskill='Pottery',
         },
@@ -570,6 +645,41 @@ return {
             Container='Mixing Bowl',
             Tradeskill='Baking',
         },
+        ['Hero Sandwich'] = {
+            Recipe='Hero Sandwich',
+            Trivial=295,
+            Materials={'Loaf of Bread','Vegetables','Hero Parts','Spiced Hero Parts','Smoked Hero Parts','Dressing'},
+            Container='Collapsible Spit',
+            Tradeskill='Baking',
+        },
+        ['Smoked Hero Parts'] = {
+            Recipe='Smoked Hero Parts',
+            Trivial=162,
+            Materials={'Smoker','Spices','Hero Parts'},
+            Container='Collapsible Spit',
+            Tradeskill='Baking',
+        },
+        ['Spiced Hero Parts'] = {
+            Recipe='Spiced Hero Parts',
+            Trivial=162,
+            Materials={'Spices','Jug of Sauces','Vinegar','Hero Parts'},
+            Container='Collapsible Spit',
+            Tradeskill='Baking',
+        },
+        ['Dressing'] = {
+            Recipe='Dressing',
+            Trivial=54,
+            Materials={'Vinegar','Vegetable Oil'},
+            Container='Mixing Bowl',
+            Tradeskill='Baking',
+        },
+        ['Vegetable Oil'] = {
+            Recipe='Vegetable Oil',
+            Trivial=102,
+            Materials={'Water Flask','Vegetables'},
+            Container='Brew Barrel',
+            Tradeskill='Brewing',
+        },
         -- Blacksmithing
         ['Ethereal Temper'] = {
             Recipe='Ethereal Temper',
@@ -679,6 +789,11 @@ return {
         ['Cheese'] = {Location='Klen Ironstove',SourceType='Vendor'},
         ['Loaf of Bread'] = {Location='Klen Ironstove',SourceType='Vendor'},
         ['Bear Meat'] = {Location='Klen Ironstove',SourceType='Vendor'},
+        ['Vinegar'] = {Location='Culkin Ironstove',SourceType='Vendor'},
+        ['Spices'] = {Location='Culkin Ironstove',SourceType='Vendor'},
+        ['Jug of Sauces'] = {Location='Culkin Ironstove',SourceType='Vendor'},
+        ['Hero Parts'] = {Location='Plane of Valor',SourceType='Dropped'},
+        ['Smoker'] = {Location='Pottery/Blacksmithing',SourceType='Crafted',Returnable=true},
         -- Blacksmithing
         ['Brick of Ethereal Energy'] = {Location='Planes of Power',SourceType='Dropped'},
         ['Black Nitrous Coal'] = {Location='Zosran Hammertail',SourceType='Vendor'},
@@ -720,29 +835,32 @@ return {
         ['Cat\'s Eye Agate'] = {Location='Audri Deepfacet',SourceType='Vendor'},
         ['Amber'] = {Location='Audri Deepfacet',SourceType='Vendor'},
         ['Fire Opal'] = {Location='Audri Deepfacet',SourceType='Vendor'},
-        ['Star Ruby'] = {Location='Elemental+',SourceType='Dropped'},
+        ['Star Ruby'] = {Location='Audri Deepfacet',SourceType='Vendor'},
         ['Sapphire'] = {Location='Elemental+',SourceType='Dropped'},
         ['Diamond'] = {Location='Elemental+',SourceType='Dropped'},
         ['Blue Diamond'] = {Location='Elemental+',SourceType='Dropped'},
         ['Electrum Bar'] = {Location='Audri Deepfacet',SourceType='Vendor'},
         ['Gold Bar'] = {Location='Audri Deepfacet',SourceType='Vendor'},
+        ['Silver Bar'] = {Location='Audri Deepfacet',SourceType='Vendor'},
         ['Platinum Bar'] = {Location='Audri Deepfacet',SourceType='Vendor'},
         ['Velium Bar'] = {Location='Talem Tucter',SourceType='Vendor',Zone='thurgadina'},
         ['Enchanted Electrum Bar'] = {Location='Enchanter',SourceType='Summoned'},
         ['Enchanted Gold Bar'] = {Location='Enchanter',SourceType='Summoned'},
+        ['Enchanted Silver Bar'] = {Location='Enchanter',SourceType='Summoned'},
         ['Enchanted Platinum Bar'] = {Location='Enchanter',SourceType='Summoned'},
         ['Enchanted Velium Bar'] = {Location='Enchanter',SourceType='Summoned'},
         -- Pottery
         ['Crow\'s Special Brew'] = {Location='Sculptor Radee',SourceType='Vendor'},
         ['Sealed Vial Sketch'] = {Location='Sculptor Radee',SourceType='Vendor'},
         ['Small Block of Clay'] = {Location='Sculptor Radee',SourceType='Vendor'},
+        ['Block of Clay'] = {Location='Dalin Greskar',SourceType='Vendor'},
         ['Idol Sketch'] = {Location='Sculptor Radee',SourceType='Vendor'},
         ['Imbued Amber'] = {Location='Cazic Thule Deity',SourceType='Summoned'},
         ['Large Block of Magic Clay'] = {Location='Enchanter',SourceType='Summoned'},
         ['Vial of Clear Mana'] = {Location='Enchanter',SourceType='Summoned'},
         ['Imbued Emerald'] = {Location='Tunare Deity',SourceType='Summoned'},
         ['Ceramic Lining Sketch'] = {Location='Sculptor Radee',SourceType='Vendor'},
-        ['Jar of Lacquer'] = {Location='Audri Deepfacet',SourceType='Vendor'},
+        ['Jar of Lacquer'] = {Location='Blacksmith Gerta',SourceType='Vendor'},
         -- Tailoring
         ['Packet of Paeala Sap'] = {Location='Brewmaster Berina',SourceType='Vendor'},
         ['Strand of Ether'] = {Location='Planes',SourceType='Dropped'},
@@ -773,7 +891,6 @@ return {
         ['Scaler Mold'] = {Location='Klen Ironstove',SourceType='Vendor'},
         ['Mandrake Root'] = {Location='Alchemist Redsa',SourceType='Vendor'},
         ['Small Brick of Ore'] = {Location='Borik Darkanvil',SourceType='Vendor'},
-        ['Spices'] = {Location='Klen Ironstove',SourceType='Vendor'},
         ['Bottle'] = {Location='Brewmaster Berina',SourceType='Vendor'},
         ['Barley'] = {Location='Brewmaster Berina',SourceType='Vendor'},
         ['Hops'] = {Location='Brewmaster Berina',SourceType='Vendor'},

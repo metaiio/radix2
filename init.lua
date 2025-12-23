@@ -1,4 +1,4 @@
-local stuckDetection = {
+﻿local stuckDetection = {
     lastPos = {x = 0, y = 0, z = 0},
     lastMoveTime = os.clock() * 1000,
     stuckCount = 0,
@@ -149,6 +149,7 @@ local crafting = {
     NumMade = 0,
     SuccessMessage = nil,
     FailedMessage = nil,
+    Fast = true,  -- Enable fast mode for quicker combines
 }
 local selling = {
     Status = false
@@ -258,6 +259,8 @@ local function drawSelectedRecipeBar(tradeskill)
             crafting.StopAtTrivial = ImGui.Checkbox('Stop At Trivial', crafting.StopAtTrivial)
             ImGui.SameLine()
             crafting.AutoSell = ImGui.Checkbox('Auto-Sell When Full', crafting.AutoSell)
+            ImGui.SameLine()
+            crafting.Fast = ImGui.Checkbox('Fast Mode', crafting.Fast)
             ImGui.SameLine()
             if ImGui.Button('Sell') then
                 selling.Status = true
@@ -369,6 +372,14 @@ local function radixGUI()
                 end
                 ImGui.EndTabItem()
             end
+            if ImGui.BeginTabItem('Enchanting') then
+                drawSelectedRecipeBar('Enchanting')
+                ImGui.Separator()
+                for _,recipe in ipairs(recipes.Enchanting) do
+                    RecipeTreeNode(recipe, 0, 'Enchanting', 0)
+                end
+                ImGui.EndTabItem()
+            end
             if ImGui.BeginTabItem('Materials') then
                 ImGui.PushItemWidth(300)
                 local tmpIngredientFilter = ImGui.InputTextWithHint('##materialfilter', 'Search...', ingredientFilter)
@@ -429,23 +440,113 @@ end
 
 local function goToVendor()
     if not mq.TLO.Target() then
+        printf('  ERROR: No target for goToVendor')
         return false
     end
     local vendorName = mq.TLO.Target.CleanName()
+    local vendorID = mq.TLO.Target.ID()
+    local distance = mq.TLO.Target.Distance()
 
-    if mq.TLO.Target.Distance() > 15 then
-        mq.cmdf('/nav spawn %s', vendorName)
-        mq.delay(50)
+    printf('  Distance to %s: %.1f', vendorName, distance)
+    
+    if distance > 10 then
+        printf('  Navigating to %s...', vendorName)
+        -- Use target ID instead of name to avoid space parsing issues
+        mq.cmdf('/nav id %d dist=10', vendorID)
+        mq.delay(100)
         mq.delay(60000, function() return not mq.TLO.Navigation.Active() end)
+        
+        -- Verify we got close enough
+        distance = mq.TLO.Target.Distance()
+        printf('  Final distance: %.1f', distance)
+        
+        if distance > 15 then
+            printf('  WARNING: Still far from merchant (%.1f units)', distance)
+        end
     end
+    
+    -- Face the merchant
+    mq.cmd('/face fast')
+    mq.delay(500)
+    
     return true
 end
 
 local function openVendor()
-    mq.cmd('/nomodkey /click right target')
-    mq.delay(1000, function() return mq.TLO.Window('MerchantWnd').Open() end)
-    if not mq.TLO.Window('MerchantWnd').Open() then return false end
+    if not mq.TLO.Target() then
+        printf('  ERROR: No target for openVendor')
+        return false
+    end
+    
+    local merchantName = mq.TLO.Target.CleanName()
+    
+    -- Face the merchant first
+    mq.cmd('/face fast')
+    mq.delay(500)
+    
+    -- Try to open merchant window up to 3 times
+    local attempts = 0
+    while attempts < 3 and not mq.TLO.Window('MerchantWnd').Open() do
+        attempts = attempts + 1
+        printf('  Attempt %d: Right-clicking merchant...', attempts)
+        
+        mq.cmd('/nomodkey /click right target')
+        mq.delay(2000, function() return mq.TLO.Window('MerchantWnd').Open() end)
+        
+        if not mq.TLO.Window('MerchantWnd').Open() then
+            if attempts < 3 then
+                mq.cmd('/face fast')
+                mq.delay(500)
+            end
+        end
+    end
+    
+    -- If still failed, try the "move and retarget" approach
+    if not mq.TLO.Window('MerchantWnd').Open() then
+        printf('  Standard approach failed, trying move and retarget...')
+        
+        -- Clear target
+        mq.cmd('/target clear')
+        mq.delay(500)
+        
+        -- Simple backward movement (works anywhere)
+        printf('  Moving away...')
+        mq.cmd('/keypress back hold')
+        mq.delay(1000)
+        mq.cmd('/keypress back')
+        mq.delay(300)
+        
+        -- Retarget the merchant
+        printf('  Retargeting merchant: %s', merchantName)
+        mq.cmdf('/target %s', merchantName)
+        mq.delay(1000)
+        
+        if not mq.TLO.Target() or mq.TLO.Target.CleanName() ~= merchantName then
+            printf('  ERROR: Could not retarget merchant after move')
+            return false
+        end
+        
+        -- Face and try to click
+        mq.cmd('/face fast')
+        mq.delay(500)
+        
+        printf('  Attempt 4: Right-clicking after move and retarget...')
+        mq.cmd('/nomodkey /click right target')
+        mq.delay(2000, function() return mq.TLO.Window('MerchantWnd').Open() end)
+    end
+    
+    if not mq.TLO.Window('MerchantWnd').Open() then 
+        printf('  ERROR: Could not open merchant window after all attempts (including move/retarget)')
+        return false 
+    end
+    
+    printf('  Merchant window opened, waiting for items to load...')
     mq.delay(5000, function() return mq.TLO.Merchant.ItemsReceived() end)
+    
+    if not mq.TLO.Merchant.ItemsReceived() then
+        printf('  WARNING: Merchant items not received, but window is open')
+    end
+    
     return mq.TLO.Merchant.ItemsReceived()
 end
 
@@ -454,6 +555,57 @@ local function eventNovalue(line, item)
     itemNoValue = item
 end
 mq.event("Novalue", "#*#give you absolutely nothing for the #1#.#*#", eventNovalue)
+
+-- Debug function to show all open windows
+local function debugAllOpenWindows(label)
+    printf('=== WINDOW DEBUG: %s ===', label)
+    
+    -- Check tradeskill window
+    if mq.TLO.Window('TradeskillWnd').Open() then
+        printf('  [OPEN] TradeskillWnd')
+    end
+    
+    -- Check merchant window
+    if mq.TLO.Window('MerchantWnd').Open() then
+        printf('  [OPEN] MerchantWnd')
+    end
+    
+    -- Check inventory window
+    if mq.TLO.Window('InventoryWindow').Open() then
+        printf('  [OPEN] InventoryWindow')
+    end
+    
+    -- Check generic ContainerWindow (THIS IS THE MYSTERY!)
+    if mq.TLO.Window('ContainerWindow').Open() then
+        printf('  [OPEN] ContainerWindow <<< MYSTERY WINDOW!')
+        printf('    Title: "%s"', tostring(mq.TLO.Window('ContainerWindow').Text()))
+        printf('    Tooltip: "%s"', tostring(mq.TLO.Window('ContainerWindow').Tooltip()))
+    end
+    
+    -- Check numbered container windows
+    for i = 1, 10 do
+        local windowName = 'ContainerWindow' .. i
+        if mq.TLO.Window(windowName).Open() then
+            printf('  [OPEN] %s - "%s"', windowName, tostring(mq.TLO.Window(windowName).Text()))
+        end
+    end
+    
+    -- Check pack windows
+    for i = 1, 10 do
+        local packWindow = 'pack' .. i
+        if mq.TLO.Window(packWindow).Open() then
+            printf('  [OPEN] %s', packWindow)
+        end
+    end
+    
+    -- Check for EnviroContainer (crafting station container)
+    if mq.TLO.Window('EnviroContainer').Open() then
+        printf('  [OPEN] EnviroContainer (station container)')
+        printf('    Title: "%s"', tostring(mq.TLO.Window('EnviroContainer').Text()))
+    end
+    
+    printf('=== END WINDOW DEBUG ===')
+end
 
 local NEVER_SELL = {['Diamond Coin']=true, ['Celestial Crest']=true, ['Gold Coin']=true, ['Taelosian Symbols']=true, ['Planar Symbols']=true}
 local function sellToVendor(itemToSell, bag, slot)
@@ -464,13 +616,13 @@ local function sellToVendor(itemToSell, bag, slot)
         else
             mq.cmdf('/nomodkey /itemnotify in pack%s %s leftmouseup', bag, slot)
         end
-        mq.delay(1000, function() return mq.TLO.Window('MerchantWnd/MW_SelectedItemLabel').Text() == itemToSell() end)
+        mq.delay(100, function() return mq.TLO.Window('MerchantWnd/MW_SelectedItemLabel').Text() == itemToSell end)
         mq.cmd('/nomodkey /shiftkey /notify merchantwnd MW_Sell_Button leftmouseup')
         mq.doevents('eventNovalue')
         if itemNoValue == itemToSell then
             itemNoValue = nil
         end
-        mq.delay(1000, function() return mq.TLO.Window("MerchantWnd/MW_Sell_Button")() ~= "TRUE" end)
+        mq.delay(100, function() return mq.TLO.Window("MerchantWnd/MW_Sell_Button")() ~= "TRUE" end)
     end
 end
 
@@ -674,15 +826,16 @@ local function reopenContainerWithRetry(containerName, pack)
         
         -- Try to open the container
         if pack == 'Enviro' then
-            -- For crafting stations
-            printf('  [DEBUG] Opening crafting station')
-            mq.cmdf('/mqt %s', containerName)
-            mq.delay(1000)
-            if mq.TLO.Target.Distance() > 15 then
-                mq.cmdf('/nav spawn %s', containerName)
-                mq.delay(60000, function() return not mq.TLO.Navigation.Active() end)
-            end
-            mq.cmd('/click left target')
+            -- For crafting stations - use /itemtar like craftAtStation does
+            printf('  [DEBUG] Opening crafting station using /itemtar')
+            
+            -- Use /itemtar to target the nearest clickable item/object (same as craftAtStation)
+            mq.cmd('/itemtar')
+            mq.delay(250)
+            
+            -- Click the item
+            printf('  [DEBUG] Clicking item')
+            mq.cmd('/click left item')
             mq.delay(2500, function() return mq.TLO.Window('TradeskillWnd').Open() end)
         else
             -- For inventory containers - use the pack slot notation that was passed in
@@ -728,13 +881,174 @@ local function autoSellCraftedItems()
     printf('========================================')
     printf('Inventory full! Auto-selling crafted items: %s', selectedRecipe.Recipe)
     
-    local wasOpen = mq.TLO.Window('TradeskillWnd').Open()
+    -- CRITICAL: Must close tradeskill window before opening merchant
+    -- This includes EXPERIMENTAL mode which requires special handling
+    printf('Step 1: Closing tradeskill window (including experimental mode)...')
     
-    if wasOpen then
-        printf('Step 1: Closing tradeskill window...')
+    -- DEBUG: Show ALL open windows before trying to close
+    debugAllOpenWindows('BEFORE closing for auto-sell')
+    
+    -- DEBUG: Check initial state
+    local initialState = mq.TLO.Window('TradeskillWnd').Open()
+    printf('  [DEBUG] Initial TradeskillWnd.Open() = %s', tostring(initialState))
+    
+    -- Check if any other relevant windows are open
+    if mq.TLO.Window('ContainerWindow').Open() then
+        printf('  [DEBUG] ContainerWindow is open!')
+    end
+    if mq.TLO.Window('EnviroContainer').Open() then
+        printf('  [DEBUG] EnviroContainer is open!')
+    end
+    
+    local maxAttempts = 5
+    local attempts = 0
+    
+    while attempts < maxAttempts do
+        attempts = attempts + 1
+        
+        -- Check if window is open
+        local isOpen = mq.TLO.Window('TradeskillWnd').Open()
+        printf('  [DEBUG] Loop iteration %d - TradeskillWnd.Open() = %s', attempts, tostring(isOpen))
+        
+        if not isOpen then
+            printf('  Tradeskill window is closed')
+            break
+        end
+        
+        printf('  Attempt %d: Closing tradeskill window...', attempts)
+        
+        -- Method 1: Try to exit experimental mode (if in it)
+        -- Clicking the Experiment button again should toggle it off
+        printf('    Trying: Exit experimental mode')
+        mq.cmd('/notify TradeskillWnd COMBW_ExperimentButton leftmouseup')
+        mq.delay(1000, function() return not mq.TLO.Window('TradeskillWnd').Open() end)
+        
+        if not mq.TLO.Window('TradeskillWnd').Open() then
+            printf('  Exited experimental mode successfully')
+            break
+        end
+        
+        -- Method 2: Try standard DoClose
+        printf('    Trying: DoClose()')
+        mq.TLO.Window('TradeskillWnd').DoClose()
+        mq.delay(1000, function() return not mq.TLO.Window('TradeskillWnd').Open() end)
+        
+        if not mq.TLO.Window('TradeskillWnd').Open() then
+            printf('  DoClose() worked')
+            break
+        end
+        
+        -- Method 3: Click away from station (for crafting stations like Pottery Wheel)
+        if attempts >= 3 and mq.TLO.Target() and mq.TLO.Target.Type() == 'Untargetable' then
+            printf('    Trying: Click away from station')
+            mq.cmd('/target clear')
+            mq.delay(500)
+            -- Click on ground to deselect everything
+            mq.cmd('/click left')
+            mq.delay(500)
+        end
+    end
+    
+    -- Final verification and forceful close
+    local finalIsOpen = mq.TLO.Window('TradeskillWnd').Open()
+    printf('  [DEBUG] After close attempts - TradeskillWnd.Open() = %s', tostring(finalIsOpen))
+    
+    -- FORCE close attempts even if Open() returns false (window might be in weird state)
+    if finalIsOpen or attempts > 0 then
+        printf('  Performing forceful close sequence...')
+        
+        -- Blast all close methods
+        mq.cmd('/notify TradeskillWnd COMBW_ExperimentButton leftmouseup')
+        mq.delay(250)
         mq.TLO.Window('TradeskillWnd').DoClose()
         mq.delay(500)
+        
+        -- Final check
+        finalIsOpen = mq.TLO.Window('TradeskillWnd').Open()
+        printf('  [DEBUG] After forceful close - TradeskillWnd.Open() = %s', tostring(finalIsOpen))
     end
+    
+    if mq.TLO.Window('TradeskillWnd').Open() then
+        printf('  ERROR: Could not close tradeskill window after %d attempts!', attempts)
+        printf('  Cannot open merchant with tradeskill window open')
+        printf('  Please manually close the tradeskill window and try again')
+        crafting.FailedMessage = 'Could not close tradeskill window (experimental mode?)'
+        return false
+    end
+    
+    printf('  Tradeskill window closed successfully')
+    
+    debugAllOpenWindows('AFTER closing tradeskill window')
+    
+    -- AGGRESSIVE WINDOW CLOSING - close EVERYTHING before merchant
+    printf('  Closing all other windows that might interfere...')
+    
+    -- Close any container windows
+    for i = 1, 10 do
+        if mq.TLO.Window('ContainerWindow' .. i).Open() then
+            printf('    Closing ContainerWindow%d', i)
+            mq.TLO.Window('ContainerWindow' .. i).DoClose()
+            mq.delay(100)
+        end
+    end
+    
+    -- CRITICAL: Close the mystery ContainerWindow (Pottery Wheel container)
+    -- Try multiple times because it's stubborn
+    for attempt = 1, 5 do
+        if mq.TLO.Window('ContainerWindow').Open() then
+            printf('    Attempt %d: Closing ContainerWindow (Title: "%s")', attempt, tostring(mq.TLO.Window('ContainerWindow').Text()))
+            mq.TLO.Window('ContainerWindow').DoClose()
+            mq.delay(200)
+            
+            -- Also try closing by clicking away from station
+            if attempt >= 3 and mq.TLO.Target() and mq.TLO.Target.Type() == 'Untargetable' then
+                printf('    Clearing target to release container...')
+                mq.cmd('/target clear')
+                mq.delay(500)
+            end
+        else
+            printf('    ContainerWindow successfully closed')
+            break
+        end
+    end
+    
+    -- Close any pack windows
+    for i = 1, 10 do
+        local packWindow = 'pack' .. i
+        if mq.TLO.Window(packWindow).Open() then
+            printf('    Closing %s', packWindow)
+            mq.TLO.Window(packWindow).DoClose()
+            mq.delay(50)
+        end
+    end
+    
+    -- Clear target to fully release the crafting station/container
+    if mq.TLO.Target() and mq.TLO.Target.Type() == 'Untargetable' then
+        printf('  Clearing crafting station target...')
+        mq.cmd('/target clear')
+        mq.delay(250)
+    end
+    
+    -- Close inventory bags too - they can also interfere
+    if mq.TLO.Window('InventoryWindow').Open() then
+        printf('  Closing inventory bags...')
+        mq.cmd('/keypress CLOSE_INV_BAGS')
+        mq.delay(500)
+    end
+    
+    -- Final check - close ANY window that's not essential
+    printf('  Final window check...')
+    mq.cmd('/keypress CLOSE_INV_BAGS')
+    mq.delay(250)
+    
+    -- One more ContainerWindow check
+    if mq.TLO.Window('ContainerWindow').Open() then
+        printf('  WARNING: ContainerWindow still open, forcing close...')
+        mq.TLO.Window('ContainerWindow').DoClose()
+        mq.delay(500)
+    end
+    
+    debugAllOpenWindows('AFTER aggressive window closing')
     
     if mq.TLO.Cursor() then
         local cursorItem = mq.TLO.Cursor.Name()
@@ -746,6 +1060,26 @@ local function autoSellCraftedItems()
             return false
         end
     end
+    
+    -- CRITICAL: Step away from crafting station
+    -- Even with windows closed, being AT the station blocks right-clicking NPCs
+    printf('Step 1.5: Stepping away from crafting station...')
+    
+    -- Clear station target first (releases it)
+    if mq.TLO.Target() and mq.TLO.Target.Type() == 'Untargetable' then
+        printf('  Clearing station target...')
+        mq.cmd('/target clear')
+        mq.delay(500)
+    end
+    
+    -- Simple: just back up for 2 seconds (works anywhere!)
+    printf('  Backing away from station...')
+    mq.cmd('/keypress back hold')
+    mq.delay(2000)
+    mq.cmd('/keypress back')
+    mq.delay(300)
+    
+    printf('  Stepped away from station')
     
     printf('Step 2: Finding nearest merchant...')
     
@@ -762,21 +1096,44 @@ local function autoSellCraftedItems()
     
     if not mq.TLO.Target() then
         printf('  ERROR: Could not find any merchant to target!')
-        printf('  Make sure you are in a zone with merchants nearby')
         crafting.FailedMessage = 'No merchant found!'
         return false
     end
     
     local merchantName = mq.TLO.Target.CleanName()
+    local merchantDist = mq.TLO.Target.Distance() or 0
     printf('  Merchant targeted: %s', merchantName)
+    printf('  Distance to merchant: %.1f', merchantDist)
     
-    if not goToVendor() then 
-        printf('  ERROR: Failed to reach merchant: %s', merchantName)
-        crafting.FailedMessage = 'Could not reach merchant'
-        return false 
+    -- Skip navigation - we're already away from station, just open merchant
+    printf('Step 3: Opening merchant window...')
+    
+    debugAllOpenWindows('BEFORE opening merchant')
+    
+    -- FINAL CHECK: Ensure tradeskill window is still closed before opening merchant
+    if mq.TLO.Window('TradeskillWnd').Open() then
+        printf('  ERROR: Tradeskill window reopened somehow!')
+        printf('  Attempting to close again (including experimental mode)...')
+        
+        -- Try experimental mode exit first
+        mq.cmd('/notify TradeskillWnd COMBW_ExperimentButton leftmouseup')
+        mq.delay(500)
+        
+        -- Then DoClose
+        if mq.TLO.Window('TradeskillWnd').Open() then
+            mq.TLO.Window('TradeskillWnd').DoClose()
+            mq.delay(1000, function() return not mq.TLO.Window('TradeskillWnd').Open() end)
+        end
+        
+        if mq.TLO.Window('TradeskillWnd').Open() then
+            printf('  ERROR: Cannot close tradeskill window - aborting')
+            crafting.FailedMessage = 'Tradeskill window interfering with merchant'
+            return false
+        end
+        
+        printf('  Tradeskill window closed on retry')
     end
     
-    printf('Step 3: Opening merchant window...')
     if not openVendor() then 
         printf('  ERROR: Failed to open merchant window')
         crafting.FailedMessage = 'Could not open merchant'
@@ -796,9 +1153,9 @@ local function autoSellCraftedItems()
                 local item = bagSlot.Item(j)
                 if item.ID() then
                     if item.Name() == selectedRecipe.Recipe then
-                        sellToVendor(item, i, j)
+                        sellToVendor(item.Name(), i, j)
                         itemsSold = itemsSold + 1
-                        mq.delay(250)
+                        mq.delay(200)  -- Allow inventory to update after sale
                     end
                 end
             end
@@ -876,6 +1233,34 @@ local function autoSellCraftedItems()
     
     printf('========================================')
     printf('AUTO-SELL COMPLETE')
+    printf('========================================')
+    
+    -- Navigate back to crafting station before resuming
+    local stationName = selectedRecipe.Container
+    if recipes.Stations and recipes.Stations[mq.TLO.Zone.ShortName()] and recipes.Stations[mq.TLO.Zone.ShortName()][stationName] then
+        local stationLoc = recipes.Stations[mq.TLO.Zone.ShortName()][stationName]
+        printf('Step 6: Returning to crafting station: %s', stationName)
+        printf('  Navigating to station location: %s', stationLoc)
+        
+        mq.cmdf('/nav loc %s log=off', stationLoc)
+        mq.delay(100)
+        
+        -- Wait for navigation to complete (max 30 seconds)
+        local navStart = os.clock()
+        while mq.TLO.Navigation.Active() and (os.clock() - navStart) < 30 do
+            mq.delay(100)
+        end
+        
+        printf('  Arrived at station location')
+        mq.delay(2000)  -- Let character settle and spawns fully load
+        
+        -- Clear any existing target to force fresh search
+        mq.cmd('/target clear')
+        mq.delay(1000)
+    else
+        printf('Step 6: Skipping navigation - station location not found')
+    end
+    
     printf('Tradeskill window will reopen on next craft attempt')
     printf('========================================')
     return true
@@ -1050,8 +1435,9 @@ local function sell()
                 local item = bagSlot.Item(j)
                 if item.ID() then
                     if item.Name() == selectedRecipe.Recipe then
-                        sellToVendor(item, i, j)
+                        sellToVendor(item.Name(), i, j)
                         itemsSold = itemsSold + 1
+                        mq.delay(200)  -- Allow inventory to update after sale
                     end
                 end
             end
@@ -1108,6 +1494,53 @@ local function shouldCraft()
         return false 
     end
     
+    -- Spell-based recipes (Enchanting) don't need container checks
+    if selectedRecipe.Spell then
+        -- Just check for spell knowledge
+        local spellName = selectedRecipe.Spell
+        local altSpell = selectedRecipe.AlternateSpell
+        
+        local hasSpell = mq.TLO.Me.Book(spellName)()
+        if not hasSpell and altSpell then
+            hasSpell = mq.TLO.Me.Book(altSpell)()
+        end
+        
+        if not hasSpell then
+            printf('Recipe requires spell: %s', spellName)
+            if altSpell then
+                printf('  (Or alternate: %s)', altSpell)
+            end
+            crafting.FailedMessage = ('Missing spell: %s'):format(spellName)
+            return false
+        end
+        
+        -- Check materials and skip container validation
+        local numMatsNeeded = {}
+        for _,mat in ipairs(selectedRecipe.Materials) do
+            numMatsNeeded[mat] = numMatsNeeded[mat] and numMatsNeeded[mat] + 1 or 1
+        end
+        
+        local maxCombines = 999999
+        
+        for mat, count in pairs(numMatsNeeded) do
+            local matCount = mq.TLO.FindItemCount('='..mat)()
+            if matCount == 0 then
+                printf('Missing material: %s', mat)
+                crafting.FailedMessage = ('Missing material: %s'):format(mat)
+                return false
+            end
+            local matAvailable = math.floor(matCount / count)
+            if matAvailable < maxCombines then
+                maxCombines = matAvailable
+            end
+        end
+        
+        maxPossibleCombines = maxCombines
+        printf('Can make up to %d combines with current materials', maxPossibleCombines)
+        return true
+    end
+    
+    -- Normal container-based crafting
     if invSlotContainers[selectedRecipe.Container] then
         -- Check for equivalent containers (e.g., any Medicine Bag variant) in TOP LEVEL slots only
         local foundContainer, containerItem = findUsableContainer(selectedRecipe.Container)
@@ -1383,19 +1816,75 @@ end
 
 -- Helper function to safely set search text in tradeskill window
 local function setTradeskillSearchText(recipeName)
-    -- Click search box to give it focus
-    mq.cmd('/nomodkey /notify TradeskillWnd COMBW_SearchTextEdit leftmouseup')
-    mq.delay(300)
+    printf('  [DEBUG] Setting search text to: "%s"', recipeName)
+    
+    -- Method 1: Try to click and focus the search box
+    local searchBox = mq.TLO.Window('TradeskillWnd/COMBW_SearchTextEdit')
+    
+    if not searchBox() then
+        printf('  [ERROR] Search box not found!')
+        return false
+    end
+    
+    printf('  [DEBUG] Search box exists, attempting to focus...')
+    
+    -- Click search box multiple times to ensure focus
+    for i = 1, 3 do
+        mq.cmd('/nomodkey /notify TradeskillWnd COMBW_SearchTextEdit leftmouseup')
+        mq.delay(200)
+    end
     
     -- Clear existing text using select all + delete
     mq.cmd('/keypress ctrl+a')
-    mq.delay(100)
+    mq.delay(150)
     mq.cmd('/keypress delete')
     mq.delay(200)
     
-    -- Type the recipe name using /type command (safer than SetText)
-    mq.cmdf('/type %s', recipeName)
-    mq.delay(500)
+    -- Verify box is empty
+    local currentText = searchBox.Text()
+    printf('  [DEBUG] Search box text after clear: "%s"', tostring(currentText))
+    
+    -- Try SetText first (more reliable if it doesn't crash)
+    printf('  [DEBUG] Attempting SetText...')
+    local success, err = pcall(function()
+        searchBox.SetText(recipeName)
+    end)
+    
+    mq.delay(300)
+    currentText = searchBox.Text()
+    printf('  [DEBUG] Search box text after SetText: "%s"', tostring(currentText))
+    
+    -- If SetText didn't work, try /type
+    if not currentText or currentText ~= recipeName then
+        printf('  [DEBUG] SetText failed or incomplete, trying /type...')
+        
+        -- Clear again
+        mq.cmd('/keypress ctrl+a')
+        mq.delay(100)
+        mq.cmd('/keypress delete')
+        mq.delay(200)
+        
+        -- Make absolutely sure chat window doesn't have focus
+        mq.cmd('/nomodkey /notify TradeskillWnd COMBW_SearchTextEdit leftmouseup')
+        mq.delay(300)
+        
+        -- Type the text
+        mq.cmdf('/type %s', recipeName)
+        mq.delay(500)
+        
+        currentText = searchBox.Text()
+        printf('  [DEBUG] Search box text after /type: "%s"', tostring(currentText))
+    end
+    
+    -- Final verification
+    if currentText and currentText:find(recipeName) then
+        printf('  [SUCCESS] Search text set successfully')
+        return true
+    else
+        printf('  [WARNING] Search text may not be set correctly')
+        printf('  Expected: "%s", Got: "%s"', recipeName, tostring(currentText))
+        return false
+    end
 end
 
 local function craftInTradeskillWindow(pack)
@@ -1474,11 +1963,11 @@ local function craftInTradeskillWindow(pack)
         if #vendorMatches > 0 then
             printf('Using vendor version at index %d', vendorMatches[1])
             mq.TLO.Window('TradeskillWnd/COMBW_RecipeList').Select(vendorMatches[1])()
-            mq.delay(200)
+            mq.delay(500)
         elseif #exactMatches == 1 then
             printf('Single exact match found at index %d', exactMatches[1])
             mq.TLO.Window('TradeskillWnd/COMBW_RecipeList').Select(exactMatches[1])()
-            mq.delay(200)
+            mq.delay(500)
         elseif #exactMatches > 1 then
             printf('MULTIPLE recipes with same name (%d matches) - using EXPERIMENTAL mode', #exactMatches)
             printf('  Different variants exist (different materials) - experimental will use your inventory')
@@ -1507,7 +1996,7 @@ local function craftInTradeskillWindow(pack)
             return
         elseif #exactMatches == 1 then
             mq.TLO.Window('TradeskillWnd/COMBW_RecipeList').Select(exactMatches[1])()
-            mq.delay(200)
+            mq.delay(500)
         end
     end
     
@@ -1515,8 +2004,31 @@ local function craftInTradeskillWindow(pack)
         local nextRecipe = mq.TLO.Window('TradeskillWnd/COMBW_RecipeList').List(recipeExists+1)()
         if nextRecipe == selectedRecipe.Recipe then
             mq.TLO.Window('TradeskillWnd/COMBW_RecipeList').Select(recipeExists+1)()
+            mq.delay(500)
         end
     end
+    
+    -- FINAL CHECK: Wait for combine button to become enabled
+    -- This check applies whether we searched or recipe was already in list
+    printf('Final check: Waiting for combine button to become enabled...')
+    local combineReady = false
+    mq.delay(3000, function()
+        combineReady = mq.TLO.Window('TradeskillWnd/CombineButton').Enabled()
+        return combineReady
+    end)
+    
+    if not combineReady then
+        printf('ERROR: Combine button not enabled after selecting recipe!')
+        printf('  Possible reasons:')
+        printf('  - Missing required materials')
+        printf('  - Recipe requires different material variants')
+        printf('  - Tradeskill skill too low')
+        printf('  Falling back to EXPERIMENTAL mode')
+        craftInExperimental(pack)
+        return
+    end
+    
+    printf('SUCCESS: Combine button enabled - starting crafting loop')
     
     printf('=== CRAFTING LOOP DEBUG ===')
     printf('buying.Qty = %d', buying.Qty)
@@ -1594,15 +2106,36 @@ local function craftInTradeskillWindow(pack)
         end
         printf('  Check 3: Inventory OK')
         
+        -- Always wait for combine button to be enabled (even in Fast mode)
         if not crafting.Fast then
             printf('  Clearing cursor...')
             clearCursor()
             printf('  Waiting for combine button...')
             mq.delay(1000, function() return mq.TLO.Window('TradeskillWnd/CombineButton').Enabled() end)
+        else
+            -- Fast mode: Still wait for button, but shorter delay and no cursor clear
+            mq.delay(2000, function() return mq.TLO.Window('TradeskillWnd/CombineButton').Enabled() end)
         end
         
         local buttonEnabled = mq.TLO.Window('TradeskillWnd/CombineButton').Enabled()
         printf('  Combine button enabled: %s', tostring(buttonEnabled))
+        
+        if not buttonEnabled then
+            printf('ERROR: Combine button NOT enabled!')
+            printf('  Window open: %s', tostring(mq.TLO.Window('TradeskillWnd').Open()))
+            printf('  Recipe selected: %s', tostring(selectedRecipe and selectedRecipe.Recipe))
+            
+            -- Try waiting a bit more
+            printf('  Waiting longer for combine button...')
+            mq.delay(3000, function() return mq.TLO.Window('TradeskillWnd/CombineButton').Enabled() end)
+            
+            buttonEnabled = mq.TLO.Window('TradeskillWnd/CombineButton').Enabled()
+            if not buttonEnabled then
+                printf('  Still not enabled after delay - STOPPING')
+                crafting.FailedMessage = 'Combine button never enabled - check materials/recipe'
+                return
+            end
+        end
         
         if buttonEnabled then
             printf('  CLICKING COMBINE BUTTON')
@@ -1648,16 +2181,58 @@ local function craftInTradeskillWindow(pack)
                     crafting.OutOfMats = false
                 end
             else
-                -- Fast mode - still need to handle tools and multiple items
-                mq.delay(250)  -- Brief delay for items to appear
-                mq.cmd('/autoinv')
-                mq.delay(250)
-                mq.cmd('/autoinv')
-                mq.delay(250)
-                -- One more for tools that return after crafted item
+                -- Fast mode - keep clearing cursor until empty
+                printf('  Fast mode: Clearing cursor items...')
+                
+                local maxAttempts = 10
+                local attempts = 0
+                local lastCursorCheck = os.clock()
+                
+                -- Keep clearing until cursor is stable and empty
+                while attempts < maxAttempts do
+                    mq.delay(200)  -- Wait for items to appear on cursor
+                    
+                    if mq.TLO.Cursor() then
+                        local cursorItem = mq.TLO.Cursor.Name()
+                        printf('    [Cursor] %s - moving to inventory', cursorItem)
+                        mq.cmd('/autoinv')
+                        attempts = attempts + 1
+                        lastCursorCheck = os.clock()
+                    else
+                        -- Cursor empty, but wait a bit to make sure nothing else appears
+                        if (os.clock() - lastCursorCheck) > 0.5 then
+                            -- Been empty for 500ms, we're done
+                            printf('  Cursor cleared after %d items', attempts)
+                            break
+                        end
+                    end
+                end
+                
+                if attempts >= maxAttempts then
+                    printf('  WARNING: Hit max attempts clearing cursor')
+                end
+                
+                -- Final check - make sure cursor is really empty
                 if mq.TLO.Cursor() then
+                    printf('  WARNING: Cursor still has item after clearing loop')
                     mq.cmd('/autoinv')
                     mq.delay(250)
+                end
+                
+                -- Check for "out of materials" event
+                mq.doevents()
+                if crafting.OutOfMats then
+                    printf('  Out of materials detected')
+                    -- Don't break immediately, verify by checking combine button
+                    mq.delay(500)
+                    local combineEnabled = mq.TLO.Window('TradeskillWnd/CombineButton').Enabled()
+                    if not combineEnabled then
+                        printf('STOPPED: Out of materials (combine button disabled)')
+                        break
+                    else
+                        printf('  False alarm - combine button still enabled, continuing')
+                        crafting.OutOfMats = false
+                    end
                 end
             end
             
@@ -1837,12 +2412,16 @@ local function craftAtStation()
     mq.cmd('/click left item')
     mq.delay(1000, function() return mq.TLO.Window('TradeskillWnd').Open() end)
     
+    debugAllOpenWindows('After clicking crafting station')
+    
     if not mq.TLO.Window('TradeskillWnd').Open() then 
         printf('  ERROR: Could not open tradeskill window')
         printf('  Retrying...')
         mq.delay(500)
         mq.cmd('/click left item')
         mq.delay(1000, function() return mq.TLO.Window('TradeskillWnd').Open() end)
+        
+        debugAllOpenWindows('After retry click on station')
         
         if not mq.TLO.Window('TradeskillWnd').Open() then
             crafting.FailedMessage = 'Could not open crafting station'
@@ -1914,6 +2493,153 @@ local function buildCraftQueue(recipe, queue, processed, depth)
     end
     
     return queue
+end
+
+-- ============================================================================
+-- SPELL-BASED CRAFTING (for Enchanting, etc.)
+-- ============================================================================
+local function craftWithSpell()
+    if not selectedRecipe then return end
+    
+    printf('===================================================')
+    printf('SPELL-BASED CRAFTING: %s', selectedRecipe.Recipe)
+    printf('===================================================')
+    
+    local spellName = nil
+    local yields = 1
+    local materialName = selectedRecipe.Materials[1]  -- Should only be 1 material for spell casting
+    
+    -- INTELLIGENT SPELL DETECTION: Check Greater Mass first (more efficient), then regular Mass
+    local regularSpell = selectedRecipe.Spell
+    local greaterSpell = selectedRecipe.AlternateSpell
+    local yieldsRegular = selectedRecipe.YieldsRegular or 1
+    local yieldsGreater = selectedRecipe.YieldsGreater or 1
+    
+    -- Priority 1: Check for Greater Mass spell (20x efficiency)
+    if greaterSpell and mq.TLO.Me.Book(greaterSpell)() then
+        spellName = greaterSpell
+        yields = yieldsGreater
+        printf('Detected: %s (Greater version - %dx yield)', spellName, yields)
+    -- Priority 2: Fall back to regular Mass spell (5x efficiency)
+    elseif regularSpell and mq.TLO.Me.Book(regularSpell)() then
+        spellName = regularSpell
+        yields = yieldsRegular
+        printf('Detected: %s (Regular version - %dx yield)', spellName, yields)
+    else
+        printf('ERROR: Character does not have required spell!')
+        printf('       Needs: %s (regular)', regularSpell)
+        if greaterSpell then
+            printf('       OR: %s (greater)', greaterSpell)
+        end
+        crafting.FailedMessage = 'Missing spell: ' .. regularSpell
+        crafting.Status = false
+        return
+    end
+    
+    printf('Material: %s', materialName)
+    printf('Yields: %d per cast', yields)
+    
+    -- Calculate how many casts needed
+    local castsNeeded = math.ceil(buying.Qty / yields)
+    local matsNeeded = castsNeeded
+    local matsHave = mq.TLO.FindItemCount('='..materialName)()
+    
+    printf('Target: %d %s', buying.Qty, selectedRecipe.Recipe)
+    printf('Requires: %d casts of %s', castsNeeded, spellName)
+    printf('Materials: %d %s (have %d)', matsNeeded, materialName, matsHave)
+    
+    crafting.NumMade = 0
+    crafting.OutOfMats = false
+    
+    -- Main crafting loop
+    while crafting.NumMade < buying.Qty and crafting.Status do
+        -- Check for material in inventory
+        local matCount = mq.TLO.FindItemCount('='..materialName)()
+        if matCount == 0 then
+            printf('Out of materials: %s', materialName)
+            crafting.OutOfMats = true
+            crafting.FailedMessage = 'Out of materials: ' .. materialName
+            break
+        end
+        
+        -- Check mana
+        local currentMana = mq.TLO.Me.CurrentMana()
+        local manaCost = mq.TLO.Spell(spellName).Mana()
+        
+        if currentMana < manaCost then
+            printf('Low mana (%d/%d), medding...', currentMana, manaCost)
+            mq.cmd('/sit')
+            mq.delay(100)
+            
+            -- Wait for 100% mana
+            while mq.TLO.Me.PctMana() < 100 and crafting.Status do
+                mq.delay(1000)
+                if not crafting.Status then
+                    mq.cmd('/stand')
+                    return
+                end
+            end
+            
+            mq.cmd('/stand')
+            mq.delay(500)
+            printf('Mana restored, resuming...')
+        end
+        
+        -- Clear cursor before casting
+        clearCursor()
+        
+        -- Cast the spell
+        printf('Casting %s on %s...', spellName, materialName)
+        mq.cmdf('/cast "%s"', spellName)
+        
+        -- Wait for spell to finish casting
+        mq.delay(100)
+        while mq.TLO.Me.Casting() do
+            mq.delay(50)
+        end
+        
+        -- Wait a bit for the enchanted item to appear on cursor
+        mq.delay(500)
+        
+        -- Check if we have something on cursor
+        if mq.TLO.Cursor() then
+            local cursorItem = mq.TLO.Cursor.Name()
+            printf('Received: %s x%d', cursorItem, mq.TLO.Cursor.Stack())
+            
+            -- Move to inventory
+            mq.cmd('/autoinv')
+            mq.delay(500)
+            
+            crafting.NumMade = crafting.NumMade + yields
+            printf('Progress: %d/%d', crafting.NumMade, buying.Qty)
+        else
+            printf('WARNING: Nothing appeared on cursor after cast')
+            -- Check if spell failed or was interrupted
+            if not mq.TLO.Me.Standing() then
+                printf('Character is sitting, standing up...')
+                mq.cmd('/stand')
+                mq.delay(500)
+            end
+        end
+        
+        -- Wait for spell to be ready again
+        local spellReady = mq.TLO.Me.SpellReady(spellName)()
+        if not spellReady then
+            printf('Waiting for spell cooldown...')
+            while not mq.TLO.Me.SpellReady(spellName)() and crafting.Status do
+                mq.delay(100)
+            end
+        end
+        
+        mq.delay(100)
+    end
+    
+    printf('===================================================')
+    printf('SPELL CRAFTING COMPLETE')
+    printf('  Total created: %d', crafting.NumMade)
+    printf('===================================================')
+    
+    crafting.SuccessMessage = string.format('Created %d %s', crafting.NumMade, selectedRecipe.Recipe)
 end
 
 -- ============================================================================
@@ -2034,7 +2760,10 @@ local function craft()
                     crafting.StopAtTrivial = false
                     
                     -- Craft it
-                    if recipes.Stations[mq.TLO.Zone.ShortName()] and recipes.Stations[mq.TLO.Zone.ShortName()][selectedRecipe.Container] then
+                    if selectedRecipe.Spell then
+                        -- Spell-based crafting (Enchanting, etc.)
+                        craftWithSpell()
+                    elseif recipes.Stations[mq.TLO.Zone.ShortName()] and recipes.Stations[mq.TLO.Zone.ShortName()][selectedRecipe.Container] then
                         craftAtStation()
                     elseif invSlotContainers[selectedRecipe.Container] then
                         craftInInvSlot()
@@ -2089,7 +2818,10 @@ local function craft()
     
     -- Normal crafting
     clearCursor()
-    if recipes.Stations[mq.TLO.Zone.ShortName()] and recipes.Stations[mq.TLO.Zone.ShortName()][selectedRecipe.Container] then
+    if selectedRecipe.Spell then
+        -- Spell-based crafting (Enchanting, etc.)
+        craftWithSpell()
+    elseif recipes.Stations[mq.TLO.Zone.ShortName()] and recipes.Stations[mq.TLO.Zone.ShortName()][selectedRecipe.Container] then
         craftAtStation()
     elseif invSlotContainers[selectedRecipe.Container] then
         craftInInvSlot()
