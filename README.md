@@ -10,3 +10,9 @@ Clone/download repo contents to `/path/to/macroquest/lua/radix` and then `/lua r
 Select a recipe under one of the tradeskill tabs and buy the necessary materials, pick number of combines to perform and start crafting.  
 
 There are still some bugs in this, not finished yet. At worst, use it as a guide to maxing out tradeskills.  
+
+---
+
+## pics.me
+
+The `pics-me/` directory contains the pics.me web app (picture stream + AI remix studio). See [pics-me/README.md](pics-me/README.md).
