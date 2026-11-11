@@ -79,7 +79,7 @@ export function useFeedVersion() {
 interface Session {
   user: Me | null;
   ready: boolean;
-  ai: "claude" | "local";
+  ai: "claude" | "model" | "local";
   setUser: (u: Me | null) => void;
   /** Pace settings. Stored on the account when signed in, on this device otherwise. */
   settings: Settings;
@@ -102,7 +102,7 @@ export function useSession() {
 export function SessionProvider({ children }: { children: ReactNode }) {
   const [user, setUser] = useState<Me | null>(null);
   const [ready, setReady] = useState(false);
-  const [ai, setAi] = useState<"claude" | "local">("local");
+  const [ai, setAi] = useState<"claude" | "model" | "local">("local");
   const [local, setLocal] = useState<Settings>(() => {
     try {
       return { ...DEFAULT_SETTINGS, ...JSON.parse(localStorage.getItem("pm_settings") ?? "{}") };

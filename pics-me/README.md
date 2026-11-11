@@ -31,6 +31,7 @@ Copy `.env.example` and set what you need. The ones that matter in production:
 | `TRUST_PROXY=1` | when behind a load balancer, so rate limits see real client IPs |
 | `DATA_DIR` | where the SQLite database and media files live (mount a volume here) |
 | `ANTHROPIC_API_KEY` | turns on Claude vision for captions, ad copy and video storyboards |
+| `AI_BASE_URL`, `AI_MODEL`, `AI_VISION` | run the Studio AI on your own OpenAI-compatible endpoint (vLLM, llama.cpp, a SLYD endpoint) instead of Claude — see below |
 | `ADMIN_USERS` | comma-separated usernames who can review reports at `/admin` |
 
 ## What makes it different
@@ -58,6 +59,19 @@ These choices came from looking at what people say drove them off the big platfo
 - **Game** — slide puzzle, tile swap, memory match or spot-the-difference built from the picture, each with a per-post leaderboard and a "challenge a friend" share.
 
 **How the AI is wired.** With `ANTHROPIC_API_KEY` set, the planning and copy come from Claude looking at the actual picture (`server/ai.ts`). Without a key the same tools run on built-in templates that only know the picture's colours and shape — useful for trying the product, not a substitute. Pixels are always rendered in the browser; the video tool animates your stills (camera moves, cuts, text, music) rather than generating new footage. Plugging in a generative image-to-video provider is the natural next step and would slot in beside `renderVideo`.
+
+**Running the AI on your own compute.** Set `AI_BASE_URL` to any OpenAI-compatible chat endpoint and it replaces Claude:
+
+```bash
+AI_BASE_URL=http://10.0.0.5:8000/v1  AI_MODEL=Qwen3-30B-A3B  AI_VISION=0  npm start
+```
+
+- With `AI_VISION=1` the model receives the picture (JPEG, ≤896px). Use this only for a model that accepts images.
+- With `AI_VISION=0` a text-only model is never sent the image. It gets the picture's shape and dominant colour plus the person's notes and brief, and is told not to invent what it can't see — so ad copy from a brief works well, while captions stay generic until a vision model is deployed.
+- Replies are requested as schema-constrained JSON; `<think>` blocks and surrounding prose from reasoning models are stripped. `AI_EXTRA_BODY` passes server-specific switches (for example disabling thinking on Qwen3).
+- If the endpoint is down or returns something unusable, the Studio falls back to templates rather than failing.
+
+This path is tested against a mock endpoint, not yet against a live vLLM or llama.cpp server.
 
 **Efficiency**
 

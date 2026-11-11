@@ -406,7 +406,7 @@ export const PostCard = memo(function PostCard({ post, near, playing, onPatch, o
               <p><Icon name="spark" size={18} /><span>
                 <strong>Made in the Studio.</strong>{" "}
                 {post.kind === "video" ? "Still pictures animated into a video." : post.kind === "ad" ? "Ad layout composed over a picture." : "A game built from a picture."}{" "}
-                {post.meta.ai === "claude" ? "AI wrote the text or planned the edit." : post.meta.ai === "local" ? "Text started from a template." : ""}
+                {post.meta.ai === "claude" || post.meta.ai === "model" ? "AI wrote the text or planned the edit." : post.meta.ai === "local" ? "Text started from a template." : ""}
               </span></p>
             )}
             {!isPublic && <p><Icon name="lock" size={18} /><span><strong>Close circle.</strong> Only people @{post.author.username} chose can see this.</span></p>}

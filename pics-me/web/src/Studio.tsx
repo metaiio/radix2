@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useRef, useState } from "react";
-import type { AdCopy, AdLayout, GameType, MediaDTO, PostDTO, Storyboard } from "../../shared/types.ts";
+import type { AdCopy, AdLayout, AiSource, GameType, MediaDTO, PostDTO, Storyboard } from "../../shared/types.ts";
 import { CAMERA_MOVES } from "../../shared/types.ts";
 import { api, ApiError, type NewPost } from "./api.ts";
 import { Game, GAME_HELP, GAME_NAMES } from "./games.tsx";
@@ -130,11 +130,11 @@ function SourcePicker({ username, onPick }: { username: string; onPick: (s: Sour
   );
 }
 
-function AiNote({ source }: { source: "claude" | "local" }) {
+function AiNote({ source }: { source: AiSource }) {
   return (
     <p className="ai-note">
       <Icon name="spark" size={15} />
-      {source === "claude" ? "Written by Claude from your picture. Edit anything." : "Starter draft from templates. Edit anything."}
+      {source === "claude" ? "Written by Claude from your picture. Edit anything." : source === "model" ? "Written by AI. Edit anything." : "Starter draft from templates. Edit anything."}
     </p>
   );
 }

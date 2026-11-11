@@ -64,7 +64,7 @@ export interface NewPost {
 }
 
 export const api = {
-  me: () => get<{ user: Me | null; ai: "claude" | "local" }>("/api/me"),
+  me: () => get<{ user: Me | null; ai: "claude" | "model" | "local" }>("/api/me"),
   signup: (b: { username: string; email: string; password: string }) => post<{ user: Me; token?: string }>("/api/auth/signup", b).then(keep),
   login: (b: { login: string; password: string }) => post<{ user: Me; token?: string }>("/api/auth/login", b).then(keep),
   logout: () => post("/api/auth/logout").finally(() => token.set(null)),

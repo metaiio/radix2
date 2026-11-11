@@ -4,6 +4,7 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import sharp from "sharp";
+import http from "node:http";
 import { execFileSync } from "node:child_process";
 import { FFMPEG } from "../server/media.ts";
 import { buildApp, type App } from "../server/app.ts";
@@ -567,4 +568,74 @@ test("bundled apps get token-only CORS; other origins stay locked out", async ()
 
   assert.equal((await call("POST", "/api/posts", { token, headers: { origin: "https://evil.example", host: "pics.me" }, body: {} })).status, 403);
   assert.equal((await call("GET", m.urls.m)).res.headers["access-control-allow-origin"], "*");
+});
+
+test("Studio AI runs on a self-hosted OpenAI-compatible model, text-only or with vision", async () => {
+  const seen: Json[] = [];
+  let reply = "";
+  const mock = http.createServer((req, res) => {
+    let body = "";
+    req.on("data", (c) => (body += c));
+    req.on("end", () => {
+      seen.push({ url: req.url, auth: req.headers.authorization, body: JSON.parse(body) });
+      res.writeHead(200, { "Content-Type": "application/json" });
+      res.end(JSON.stringify({ choices: [{ message: { content: reply } }] }));
+    });
+  });
+  await new Promise<void>((r) => mock.listen(0, r));
+  const base = `http://localhost:${(mock.address() as { port: number }).port}/v1`;
+  const make = async (vision: boolean) => {
+    const d = fs.mkdtempSync(path.join(os.tmpdir(), "picsme-model-"));
+    const a = await buildApp(loadConfig({
+      dataDir: d, rateScale: 1000, production: false, aiEnabled: false,
+      aiBaseUrl: base, aiApiKey: "sk-local", aiModel: "Qwen3-30B-A3B", aiVision: vision, aiExtraBody: { chat_template_kwargs: { enable_thinking: false } },
+    }));
+    const inject = (method: string, url: string, token?: string, payload?: object, headers: Record<string, string> = {}) =>
+      a.server.inject({ method: method as "GET", url, headers: { ...headers, ...(token ? { authorization: `Bearer ${token}` } : {}) }, ...(payload ? { payload } : {}) });
+    const token = (await inject("POST", "/api/auth/signup", undefined, { username: "modeluser", email: "m@example.com", password: "correct horse" })).json().token as string;
+    const up = multipart([{ name: "file", filename: "a.jpg", type: "image/jpeg", data: await picture(1200, 1600, "#e8a13a") }]);
+    const mediaId = (await a.server.inject({ method: "POST", url: "/api/media", headers: { ...up.headers, authorization: `Bearer ${token}` }, payload: up.payload })).json().media.id as string;
+    return { a, d, inject, token, mediaId };
+  };
+
+  // Text-only model that thinks out loud before answering.
+  const text = await make(false);
+  assert.equal((await text.inject("GET", "/api/health")).json().ai, "model");
+  reply = '<think>warm colours, portrait…</think>Here you go:\n{"caption":"Late light, kept.","hashtags":["#Golden Hour","warmtones"],"alt":"A warm-toned portrait photo."}';
+  const cap = (await text.inject("POST", "/api/ai/caption", text.token, { mediaId: text.mediaId, hint: "sunset walk" })).json();
+  assert.deepEqual([cap.source, cap.caption, cap.hashtags], ["model", "Late light, kept.", ["goldenhour", "warmtones"]]);
+  const req1 = seen.at(-1)!;
+  assert.equal(req1.url, "/v1/chat/completions");
+  assert.equal(req1.auth, "Bearer sk-local");
+  assert.equal(req1.body.model, "Qwen3-30B-A3B");
+  assert.equal(req1.body.chat_template_kwargs.enable_thinking, false);
+  assert.equal(req1.body.response_format.json_schema.schema.type, "object");
+  const userMsg = req1.body.messages[1].content;
+  assert.equal(typeof userMsg, "string", "a text-only model is never sent the image");
+  assert.match(userMsg, /You cannot see the photo/);
+  assert.match(userMsg, /portrait, 1200×1600, dominant colour #/);
+  assert.match(userMsg, /sunset walk/);
+
+  // If the model returns junk, the Studio still works from templates.
+  reply = "I'd rather not.";
+  const ad = (await text.inject("POST", "/api/ai/ad", text.token, { mediaId: text.mediaId, brand: "Northwind", product: "trail shoes" })).json();
+  assert.equal(ad.source, "local");
+  assert.ok(ad.headline.length > 0);
+
+  // Vision model: gets the picture as a JPEG data URL.
+  const vis = await make(true);
+  reply = JSON.stringify({ title: "Slow Sunday", shots: [{ mediaIndex: 0, move: "zoom-in", seconds: 2.5, text: "Look closer" }, { mediaIndex: 9, move: "pan-left", seconds: 2, text: "" }], caption: "A slow one.", hashtags: ["sunday"] });
+  const sb = (await vis.inject("POST", "/api/ai/storyboard", vis.token, { mediaIds: [vis.mediaId], vibe: "slow sunday" })).json();
+  assert.equal(sb.source, "model");
+  assert.equal(sb.shots.length, 1, "shots pointing at pictures that don't exist are dropped");
+  const parts = seen.at(-1)!.body.messages[1].content;
+  assert.equal(parts[0].type, "image_url");
+  assert.match(parts[0].image_url.url, /^data:image\/jpeg;base64,\/9j\//);
+  assert.equal(parts[1].type, "text");
+
+  for (const x of [text, vis]) {
+    await x.a.server.close();
+    fs.rmSync(x.d, { recursive: true, force: true });
+  }
+  await new Promise((r) => mock.close(r));
 });

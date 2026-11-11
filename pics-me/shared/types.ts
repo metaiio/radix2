@@ -1,5 +1,8 @@
 // Types shared by the API server and the web client.
 
+/** Who wrote AI-assisted text: Claude, a self-hosted open model, or the built-in templates. */
+export type AiSource = "claude" | "model" | "local";
+
 export type PostKind = "photo" | "video" | "ad" | "game";
 export type GameType = "slide" | "swap" | "memory" | "spot";
 export type Visibility = "public" | "circle";
@@ -82,7 +85,7 @@ export interface ReportDTO {
 export interface PostMeta {
   game?: { type: GameType; size: number; seed?: number };
   ad?: { brand: string; headline: string; cta: string; link?: string };
-  ai?: "claude" | "local";
+  ai?: AiSource;
 }
 
 export interface PostDTO {
@@ -132,7 +135,7 @@ export interface Storyboard {
   shots: { mediaIndex: number; move: CameraMove; seconds: number; text: string }[];
   caption: string;
   hashtags: string[];
-  source: "claude" | "local";
+  source: AiSource;
 }
 
 export type AdLayout = "bottom" | "center" | "top";
@@ -145,14 +148,14 @@ export interface AdCopy {
   accent: string;
   caption: string;
   hashtags: string[];
-  source: "claude" | "local";
+  source: AiSource;
 }
 
 export interface CaptionSuggestion {
   caption: string;
   hashtags: string[];
   alt: string;
-  source: "claude" | "local";
+  source: AiSource;
 }
 
 export const CAMERA_MOVES: CameraMove[] = ["zoom-in", "zoom-out", "pan-left", "pan-right", "pan-up", "pan-down"];

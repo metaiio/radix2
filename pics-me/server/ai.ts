@@ -1,7 +1,8 @@
 import Anthropic from "@anthropic-ai/sdk";
 import { zodOutputFormat } from "@anthropic-ai/sdk/helpers/zod";
+import sharp from "sharp";
 import { z } from "zod";
-import type { AdCopy, CaptionSuggestion, Storyboard } from "../shared/types.ts";
+import type { AdCopy, AiSource, CaptionSuggestion, Storyboard } from "../shared/types.ts";
 import { CAMERA_MOVES } from "../shared/types.ts";
 import type { Config } from "./config.ts";
 
@@ -60,15 +61,82 @@ export class AI {
 
   constructor(cfg: Config) {
     this.cfg = cfg;
-    this.client = cfg.aiEnabled ? new Anthropic({ maxRetries: 1, timeout: 60_000 }) : null;
+    // A self-hosted endpoint, when configured, takes precedence over Claude.
+    this.client = cfg.aiEnabled && !cfg.aiBaseUrl ? new Anthropic({ maxRetries: 1, timeout: 60_000 }) : null;
   }
 
-  get provider(): "claude" | "local" {
-    return this.client ? "claude" : "local";
+  get provider(): AiSource {
+    return this.cfg.aiBaseUrl ? "model" : this.client ? "claude" : "local";
+  }
+
+  /** Whether the configured model is sent the actual picture. */
+  get seesPictures() {
+    return this.provider === "claude" || (this.provider === "model" && this.cfg.aiVision);
+  }
+
+  /**
+   * One structured call to an OpenAI-compatible chat endpoint (vLLM, llama.cpp, …).
+   * Vision models get the pictures; text-only models get what we know about them
+   * and are told not to invent what they can't see.
+   */
+  private async askOpen<S extends z.ZodType>(schema: S, images: AiImage[], prompt: string): Promise<z.infer<S> | null> {
+    const { aiBaseUrl, aiApiKey, aiModel, aiVision, aiExtraBody } = this.cfg;
+    try {
+      let content: unknown;
+      if (aiVision) {
+        // JPEG at a modest size: every server decodes it, and it keeps small context windows free for the answer.
+        const jpegs = await Promise.all(images.map((img) => sharp(img.data).resize(896, 896, { fit: "inside", withoutEnlargement: true }).jpeg({ quality: 80 }).toBuffer()));
+        content = [
+          ...jpegs.map((j) => ({ type: "image_url", image_url: { url: `data:image/jpeg;base64,${j.toString("base64")}` } })),
+          { type: "text", text: prompt },
+        ];
+      } else {
+        const facts = images.map((img, i) => {
+          const shape = img.height > img.width * 1.15 ? "portrait" : img.width > img.height * 1.15 ? "landscape" : "square";
+          return `- Photo ${i}: ${shape}, ${img.width}×${img.height}, dominant colour ${img.color} (${mood(img.color).word})`;
+        }).join("\n");
+        content = `You cannot see the photo${images.length === 1 ? "" : "s"}. All you know:\n${facts}\n\nWork from those facts and any notes given below. Do not invent specific objects, places or people; keep the copy true of any picture with that look.\n\n${prompt}`;
+      }
+      const res = await fetch(`${aiBaseUrl}/chat/completions`, {
+        method: "POST",
+        signal: AbortSignal.timeout(90_000),
+        headers: { "Content-Type": "application/json", ...(aiApiKey ? { Authorization: `Bearer ${aiApiKey}` } : {}) },
+        body: JSON.stringify({
+          ...(aiModel ? { model: aiModel } : {}),
+          messages: [
+            { role: "system", content: `${SYSTEM}\nReply with a single JSON object and nothing else.` },
+            { role: "user", content },
+          ],
+          max_tokens: 1500,
+          temperature: 0.7,
+          response_format: { type: "json_schema", json_schema: { name: "result", strict: true, schema: z.toJSONSchema(schema) } },
+          ...aiExtraBody,
+        }),
+      });
+      if (!res.ok) {
+        console.error(`[ai] ${aiBaseUrl} answered ${res.status}: ${(await res.text()).slice(0, 300)}`);
+        return null;
+      }
+      const data = (await res.json()) as { choices?: { message?: { content?: string | null } }[] };
+      // Reasoning models may wrap the answer in <think>…</think> or prose; keep only the JSON object.
+      const text = (data.choices?.[0]?.message?.content ?? "").replace(/<think>[\s\S]*?<\/think>/g, "");
+      const start = text.indexOf("{"), end = text.lastIndexOf("}");
+      if (start < 0 || end <= start) {
+        console.error("[ai] model reply contained no JSON object");
+        return null;
+      }
+      const parsed = schema.safeParse(JSON.parse(text.slice(start, end + 1)));
+      if (!parsed.success) console.error("[ai] model reply didn't match the expected shape:", parsed.error.issues[0]?.message);
+      return parsed.success ? parsed.data : null;
+    } catch (err) {
+      console.error(`[ai] request to ${aiBaseUrl} failed:`, err instanceof Error ? err.message : err);
+      return null;
+    }
   }
 
   /** One structured vision call. Returns null when the model declines or the call fails. */
   private async ask<S extends z.ZodType>(schema: S, images: AiImage[], prompt: string): Promise<z.infer<S> | null> {
+    if (this.cfg.aiBaseUrl) return this.askOpen(schema, images, prompt);
     if (!this.client) return null;
     try {
       const res = await this.client.beta.messages.create({
@@ -114,7 +182,7 @@ export class AI {
         (hint ? `\nThe poster's own notes: "${hint}"` : ""),
     );
     if (out) {
-      return { caption: clip(out.caption, 300), hashtags: cleanTags(out.hashtags), alt: clip(out.alt, 300), source: "claude" };
+      return { caption: clip(out.caption, 300), hashtags: cleanTags(out.hashtags), alt: clip(out.alt, 300), source: this.provider };
     }
     return localCaption(image, hint);
   }
@@ -147,7 +215,7 @@ Only claim what the brief or the picture supports — no invented prices, discou
         accent: /^#[0-9a-f]{6}$/i.test(out.accent) ? out.accent : vivid(image.color),
         caption: clip(out.caption, 300),
         hashtags: cleanTags(out.hashtags),
-        source: "claude",
+        source: this.provider,
       };
     }
     return localAd(image, brief);
@@ -174,7 +242,7 @@ Plan the edit:
         .slice(0, 12)
         .map((s) => ({ ...s, seconds: Math.min(Math.max(s.seconds, 1.2), 5), text: clip(s.text, 80) }));
       if (shots.length) {
-        return { title: clip(out.title, 60), shots, caption: clip(out.caption, 300), hashtags: cleanTags(out.hashtags), source: "claude" };
+        return { title: clip(out.title, 60), shots, caption: clip(out.caption, 300), hashtags: cleanTags(out.hashtags), source: this.provider };
       }
     }
     return localStoryboard(n, vibe);

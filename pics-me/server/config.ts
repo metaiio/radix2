@@ -12,6 +12,13 @@ export interface Config {
   maxImageBytes: number;
   maxVideoBytes: number;
   aiModel: string;
+  /** OpenAI-compatible endpoint (vLLM, llama.cpp, a SLYD endpoint…), e.g. http://10.0.0.5:8000/v1. When set, it is used instead of Claude. */
+  aiBaseUrl: string;
+  aiApiKey: string;
+  /** The model at aiBaseUrl accepts images. If false it is given facts about the picture instead of the picture. */
+  aiVision: boolean;
+  /** Extra JSON merged into each request body (server-specific switches). */
+  aiExtraBody: Record<string, unknown>;
   aiEnabled: boolean;
   production: boolean;
   /** Multiplier for rate limits (tests raise it). */
@@ -31,7 +38,18 @@ export function loadConfig(overrides: Partial<Config> = {}): Config {
     trustProxy: env.TRUST_PROXY === "1",
     maxImageBytes: num(env.MAX_IMAGE_MB, 25) * 1024 * 1024,
     maxVideoBytes: num(env.MAX_VIDEO_MB, 60) * 1024 * 1024,
-    aiModel: env.AI_MODEL || "claude-opus-5-5",
+    aiModel: env.AI_MODEL || (env.AI_BASE_URL ? "" : "claude-opus-5-5"),
+    aiBaseUrl: (env.AI_BASE_URL ?? "").replace(/\/$/, ""),
+    aiApiKey: env.AI_API_KEY ?? "",
+    aiVision: env.AI_VISION === "1",
+    aiExtraBody: (() => {
+      try {
+        return env.AI_EXTRA_BODY ? (JSON.parse(env.AI_EXTRA_BODY) as Record<string, unknown>) : {};
+      } catch {
+        console.error("[config] AI_EXTRA_BODY is not valid JSON — ignoring it");
+        return {};
+      }
+    })(),
     aiEnabled: Boolean(env.ANTHROPIC_API_KEY || env.ANTHROPIC_AUTH_TOKEN),
     production: env.NODE_ENV === "production",
     rateScale: num(env.RATE_SCALE, 1),

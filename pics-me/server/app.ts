@@ -114,7 +114,7 @@ const NewPost = z.object({
           link: z.string().trim().max(300).regex(/^https?:\/\//i).optional(),
         })
         .optional(),
-      ai: z.enum(["claude", "local"]).optional(),
+      ai: z.enum(["claude", "model", "local"]).optional(),
     })
     .default({}),
 });
@@ -1090,7 +1090,7 @@ export async function buildApp(cfg: Config, dbFile = path.join(cfg.dataDir, "pic
       );
       if (!open) throw new HttpError(403, "That picture isn't open for remixing.");
     }
-    return { data: ai.provider === "claude" ? await media.readMedium(uid) : Buffer.alloc(0), color: m.color, width: m.width, height: m.height };
+    return { data: ai.seesPictures ? await media.readMedium(uid) : Buffer.alloc(0), color: m.color, width: m.width, height: m.height };
   }
 
   server.post("/api/ai/caption", async (req) => {
