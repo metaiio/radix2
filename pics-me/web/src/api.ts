@@ -3,6 +3,8 @@ import type {
   Storyboard, UserDTO, Visibility,
 } from "../../shared/types.ts";
 
+import { absolutize, API_BASE, BUNDLED, token } from "./platform.ts";
+
 export class ApiError extends Error {
   status: number;
   constructor(status: number, message: string) {
@@ -14,10 +16,14 @@ export class ApiError extends Error {
 async function request<T>(method: string, url: string, body?: unknown): Promise<T> {
   let res: Response;
   try {
-    res = await fetch(url, {
+    const headers: Record<string, string> = {};
+    if (!(body instanceof FormData) && body !== undefined) headers["Content-Type"] = "application/json";
+    const saved = BUNDLED ? token.get() : null;
+    if (saved) headers.Authorization = `Bearer ${saved}`;
+    res = await fetch(API_BASE + url, {
       method,
-      credentials: "same-origin",
-      headers: body instanceof FormData || body === undefined ? undefined : { "Content-Type": "application/json" },
+      credentials: BUNDLED ? "omit" : "same-origin",
+      headers,
       body: body instanceof FormData ? body : body === undefined ? undefined : JSON.stringify(body),
     });
   } catch {
@@ -25,8 +31,14 @@ async function request<T>(method: string, url: string, body?: unknown): Promise<
   }
   const data = await res.json().catch(() => ({}));
   if (!res.ok) throw new ApiError(res.status, (data as { error?: string }).error ?? "Something went wrong.");
-  return data as T;
+  return absolutize(data as T);
 }
+
+/** In the bundled apps there is no cookie, so the session token is kept on the device. */
+const keep = <T extends { token?: string }>(r: T) => {
+  if (BUNDLED && r.token) token.set(r.token);
+  return r;
+};
 
 const get = <T,>(url: string) => request<T>("GET", url);
 const post = <T,>(url: string, body: unknown = {}) => request<T>("POST", url, body);
@@ -53,11 +65,18 @@ export interface NewPost {
 
 export const api = {
   me: () => get<{ user: Me | null; ai: "claude" | "local" }>("/api/me"),
-  signup: (b: { username: string; email: string; password: string }) => post<{ user: Me }>("/api/auth/signup", b),
-  login: (b: { login: string; password: string }) => post<{ user: Me }>("/api/auth/login", b),
-  logout: () => post("/api/auth/logout"),
+  signup: (b: { username: string; email: string; password: string }) => post<{ user: Me; token?: string }>("/api/auth/signup", b).then(keep),
+  login: (b: { login: string; password: string }) => post<{ user: Me; token?: string }>("/api/auth/login", b).then(keep),
+  logout: () => post("/api/auth/logout").finally(() => token.set(null)),
+  /** Downloads the account export. Fetched (not linked) so it works with token auth too. */
+  exportData: async () => {
+    const saved = BUNDLED ? token.get() : null;
+    const res = await fetch(`${API_BASE}/api/me/export`, { credentials: BUNDLED ? "omit" : "same-origin", headers: saved ? { Authorization: `Bearer ${saved}` } : undefined });
+    if (!res.ok) throw new ApiError(res.status, "Couldn't prepare your download. Try again.");
+    return res.blob();
+  },
   updateMe: (b: { displayName?: string; bio?: string; avatarMediaId?: string | null; settings?: Partial<Settings> }) => request<{ user: Me }>("PATCH", "/api/me", b),
-  deleteMe: (password: string) => del("/api/me", { password }),
+  deleteMe: (password: string) => del("/api/me", { password }).finally(() => token.set(null)),
 
   home: (cursor?: string | null) => get<Page<PostDTO>>(`/api/feed/home?${q(cursor)}`),
   discover: (lens: Lens, cursor?: string | null) => get<Page<PostDTO>>(`/api/feed/discover?lens=${lens}&${q(cursor)}`),

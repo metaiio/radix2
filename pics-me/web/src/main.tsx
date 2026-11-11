@@ -3,6 +3,7 @@ import { createRoot } from "react-dom/client";
 import { AboutPage, ActivityPage, AdminPage, AuthPage, ExplorePage, FeedPage, PostPage, ProfilePage, SettingsPage, TagPage } from "./pages.tsx";
 import { Link, SessionProvider, useLocation, useSession } from "./state.tsx";
 import { Avatar, Empty, Icon, Spinner } from "./ui.tsx";
+import { BUNDLED } from "./platform.ts";
 import "./styles.css";
 
 // Creation tools are split out so the stream itself stays a small download.
@@ -82,6 +83,6 @@ createRoot(document.getElementById("root")!).render(
   </StrictMode>,
 );
 
-if ("serviceWorker" in navigator && import.meta.env.PROD) {
+if ("serviceWorker" in navigator && import.meta.env.PROD && !BUNDLED) {
   window.addEventListener("load", () => void navigator.serviceWorker.register("/sw.js").catch(() => {}));
 }

@@ -2,6 +2,7 @@ import { memo, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import type { CommentDTO, MediaDTO, Page, PostDTO } from "../../shared/types.ts";
 import { api, ApiError } from "./api.ts";
 import { GamePlayer, GAME_NAMES } from "./games.tsx";
+import { share as shareLink, SITE } from "./platform.ts";
 import { Link, navigate, refreshFeeds, useSession } from "./state.tsx";
 import { ago, Avatar, compact, Empty, Icon, Picture, RichText, Sheet, Spinner } from "./ui.tsx";
 
@@ -305,14 +306,8 @@ export const PostCard = memo(function PostCard({ post, near, playing, onPatch, o
   };
 
   const share = async () => {
-    const url = `${location.origin}/p/${post.id}`;
-    try {
-      if (navigator.share) await navigator.share({ title: `${post.author.displayName} on pics.me`, text: post.caption.slice(0, 120), url });
-      else {
-        await navigator.clipboard.writeText(url);
-        toast("Link copied");
-      }
-    } catch { /* share sheet dismissed */ }
+    const how = await shareLink({ title: `${post.author.displayName} on pics.me`, url: `${SITE}/p/${post.id}` });
+    if (how === "copied") toast("Link copied");
   };
 
   const long = post.caption.length > 110;

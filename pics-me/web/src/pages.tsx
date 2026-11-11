@@ -2,6 +2,7 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import { LENSES, type Lens, type NotificationDTO, type PostDTO, type ProfileDTO, type ReportDTO, type UserDTO } from "../../shared/types.ts";
 import { api, ApiError } from "./api.ts";
 import { Feed } from "./Feed.tsx";
+import { share as shareLink, SITE } from "./platform.ts";
 import { goBack, Link, navigate, refreshFeeds, useFeedVersion, useSession } from "./state.tsx";
 import { shrinkForUpload } from "./studio/render.ts";
 import { ago, Avatar, compact, Empty, Icon, PageHeader, Picture, PostGrid, Sentinel, Sheet, Spinner } from "./ui.tsx";
@@ -88,7 +89,7 @@ export function FeedPage({ tab, active }: { tab: "home" | "discover"; active: bo
       {picking && (
         <Sheet title="What Discover shows" onClose={() => setPicking(false)}>
           <div className="sheet-pad stack">
-            <p className="muted">You choose the rule. None of these use what you've watched, liked or lingered on.</p>
+            <p className="muted">You choose the rule. Only For you is personal: it uses your own likes, saves and follows. Nothing here uses watch time.</p>
             <div className="choice-list" role="radiogroup">
               {LENS_IDS.map((id) => (
                 <button key={id} role="radio" aria-checked={lens === id} className={"choice" + (lens === id ? " on" : "")} onClick={() => (updateSettings({ lens: id }), setPicking(false))}>
@@ -355,11 +356,8 @@ export function ProfilePage({ username }: { username: string }) {
           <div className="menu">
             <button onClick={async () => {
               setMenu(false);
-              try {
-                await navigator.clipboard.writeText(`${location.origin}/u/${profile.username}`);
-                toast("Profile link copied");
-              } catch { /* clipboard unavailable */ }
-            }}><Icon name="link" size={20} /> Copy profile link</button>
+              if ((await shareLink({ title: `${profile.displayName} on pics.me`, url: `${SITE}/u/${profile.username}` })) === "copied") toast("Profile link copied");
+            }}><Icon name="link" size={20} /> Share profile</button>
             {!profile.blocked && (
               <button className="danger" onClick={() => {
                 setMenu(false);
@@ -546,7 +544,19 @@ export function SettingsPage() {
             )}
 
             <h3 className="section-title">Your data</h3>
-            <a className="btn btn-ghost" href="/api/me/export" download><Icon name="download" size={18} /> Download everything you've posted</a>
+            <button className="btn btn-ghost" onClick={async () => {
+              toast("Preparing your download…");
+              try {
+                const url = URL.createObjectURL(await api.exportData());
+                const a = Object.assign(document.createElement("a"), { href: url, download: `pics.me-${user.username}.zip` });
+                document.body.append(a);
+                a.click();
+                a.remove();
+                setTimeout(() => URL.revokeObjectURL(url), 60_000);
+              } catch (err) {
+                toast(errText(err, "Couldn't prepare your download."));
+              }
+            }}><Icon name="download" size={18} /> Download everything you've posted</button>
             <p className="muted">A ZIP with your pictures, videos, captions, comments and lists. It's yours.</p>
 
             <h3 className="section-title">Account</h3>
@@ -598,7 +608,7 @@ export function AboutPage() {
           <ul>
             {LENS_IDS.map((id) => <li key={id}><strong>{LENSES[id].name}.</strong> {LENSES[id].rule}</li>)}
           </ul>
-          <p>That is the entire system. It doesn't track what you watch, how long you pause, or what you tap, and it doesn't build a profile of you to decide what comes next. Every post can tell you why it's in front of you.</p>
+          <p>That is the entire system. Only <strong>For you</strong> is personal, and only if you choose it: it ranks by things you did on purpose — likes, saves, comments, follows — and by what people you follow liked. Nothing tracks what you watch or how long you pause, and every post can tell you why it's in front of you.</p>
         </section>
 
         <section>

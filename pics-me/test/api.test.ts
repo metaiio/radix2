@@ -14,7 +14,7 @@ let dir: string;
 
 before(async () => {
   dir = fs.mkdtempSync(path.join(os.tmpdir(), "picsme-test-"));
-  app = await buildApp(loadConfig({ dataDir: dir, aiEnabled: false, rateScale: 1000, production: false, admins: ["boss"] }));
+  app = await buildApp(loadConfig({ dataDir: dir, aiEnabled: false, rateScale: 1000, production: false, admins: ["boss"], appOrigins: ["capacitor://localhost"] }));
 });
 
 after(async () => {
@@ -455,7 +455,7 @@ test("saves are private; activity inbox records likes, comments, follows and rem
 test("pace settings are stored per person with calm defaults", async () => {
   const token = await signup("pacer");
   const me = (await call("GET", "/api/me", { token })).json.user;
-  assert.deepEqual(me.settings, { quietCounts: false, breakEvery: 30, autoplay: true, lens: "latest" });
+  assert.deepEqual(me.settings, { quietCounts: false, breakEvery: 30, autoplay: true, lens: "latest" }, "personal ranking is off by default");
   const r = await call("PATCH", "/api/me", { token, body: { settings: { quietCounts: true, breakEvery: 0, lens: "shuffle" } } });
   assert.deepEqual(r.json.user.settings, { quietCounts: true, breakEvery: 0, autoplay: true, lens: "shuffle" });
   assert.equal((await call("PATCH", "/api/me", { token, body: { settings: { lens: "engagement" } } })).status, 400);
@@ -508,4 +508,63 @@ test("reports reach admins, who can dismiss or remove", async () => {
   assert.equal((await call("GET", `/api/posts/${bad1.id}`)).status, 200);
   assert.equal((await call("GET", `/api/posts/${bad2.id}`)).status, 404);
   assert.equal((await call("GET", "/api/admin/reports", { token: boss })).json.reports.length, 0);
+});
+
+test("For you ranks on deliberate signals only and explains each pick", async () => {
+  const me = await signup("fy_me");
+  const friend = await signup("fy_friend");
+  const liked = await signup("fy_liked_author");
+  const tagger = await signup("fy_tagger");
+  const nobody = await signup("fy_nobody");
+  const pic = async (t: string) => (await upload(t)).id;
+
+  const seedPost = await post(liked, { kind: "photo", caption: "older #fyceramics", mediaIds: [await pic(liked)] });
+  await call("POST", `/api/posts/${seedPost.id}/like`, { token: me });
+  await call("POST", `/api/posts/${seedPost.id}/save`, { token: me });
+  await call("POST", "/api/users/fy_friend/follow", { token: me });
+
+  const byAuthor = await post(liked, { kind: "photo", caption: "new from an author I liked", mediaIds: [await pic(liked)] });
+  const byTag = await post(tagger, { kind: "photo", caption: "a stranger's #fyceramics", mediaIds: [await pic(tagger)] });
+  const byFriendLike = await post(nobody, { kind: "photo", caption: "my friend liked this", mediaIds: [await pic(nobody)] });
+  const cold = await post(nobody, { kind: "photo", caption: "no signal at all", mediaIds: [await pic(nobody)] });
+  await call("POST", `/api/posts/${byFriendLike.id}/like`, { token: friend });
+
+  const r = await call("GET", "/api/feed/discover?lens=foryou", { token: me });
+  assert.equal(r.json.lens, "foryou");
+  const items: Json[] = r.json.items;
+  const pos = (id: string) => items.findIndex((x) => x.id === id);
+  const why = (id: string) => items[pos(id)]!.why as string;
+  assert.ok(pos(seedPost.id) < 0, "posts you already liked aren't shown again");
+  for (const p of [byAuthor, byTag, byFriendLike]) assert.ok(pos(p.id) >= 0 && pos(p.id) < pos(cold.id), "signalled posts outrank a cold one");
+  assert.equal(why(byAuthor.id), "You've liked or saved posts by @fy_liked_author");
+  assert.equal(why(byTag.id), "You've liked or saved posts tagged #fyceramics");
+  assert.equal(why(byFriendLike.id), "Liked by someone you follow");
+  assert.match(why(cold.id), /Recent and well liked/);
+
+  const anon = await call("GET", "/api/feed/discover?lens=foryou");
+  assert.equal(anon.json.lens, "loved", "signed out there is nothing personal to rank by");
+});
+
+test("bundled apps get token-only CORS; other origins stay locked out", async () => {
+  const token = await signup("native_user");
+  const app = { origin: "capacitor://localhost", host: "pics.me" };
+  const pre = await call("OPTIONS", "/api/posts", { headers: { ...app, "access-control-request-method": "POST" } });
+  assert.equal(pre.status, 204);
+  assert.equal(pre.res.headers["access-control-allow-origin"], "capacitor://localhost");
+  assert.match(String(pre.res.headers["access-control-allow-headers"]), /authorization/);
+  assert.equal(pre.res.headers["access-control-allow-credentials"], undefined);
+
+  const m = await upload(token);
+  const created = await call("POST", "/api/posts", { token, headers: app, body: { kind: "photo", mediaIds: [m.id] } });
+  assert.equal(created.status, 200);
+  assert.equal(created.res.headers["access-control-allow-origin"], "capacitor://localhost");
+
+  // A cookie alone must not authenticate a cross-origin app request.
+  const login = await call("POST", "/api/auth/login", { body: { login: "native_user", password: "correct horse" } });
+  const cookie = String(login.res.headers["set-cookie"]).split(";")[0]!;
+  assert.equal((await call("GET", "/api/me", { headers: { cookie } })).json.user.username, "native_user");
+  assert.equal((await call("GET", "/api/me", { headers: { ...app, cookie } })).json.user, null);
+
+  assert.equal((await call("POST", "/api/posts", { token, headers: { origin: "https://evil.example", host: "pics.me" }, body: {} })).status, 403);
+  assert.equal((await call("GET", m.urls.m)).res.headers["access-control-allow-origin"], "*");
 });

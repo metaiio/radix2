@@ -195,6 +195,23 @@ export async function buildApp(cfg: Config, dbFile = path.join(cfg.dataDir, "pic
   server.addHook("onRequest", async (req, reply) => {
     reply.header("X-Content-Type-Options", "nosniff");
     reply.header("Referrer-Policy", "strict-origin-when-cross-origin");
+    // The bundled mobile apps call from their own origin. They authenticate with a
+    // bearer token and never send cookies, so they get CORS without credentials.
+    const origin = req.headers.origin;
+    if (origin && cfg.appOrigins.includes(origin)) {
+      reply.header("Access-Control-Allow-Origin", origin);
+      reply.header("Vary", "Origin");
+      if (req.method === "OPTIONS") {
+        return reply
+          .header("Access-Control-Allow-Methods", "GET, POST, PUT, PATCH, DELETE")
+          .header("Access-Control-Allow-Headers", "authorization, content-type")
+          .header("Access-Control-Max-Age", "86400")
+          .status(204).send();
+      }
+      // Ignore any cookie on these requests: only the explicit token counts.
+      delete req.headers.cookie;
+      return;
+    }
     // Cookies are SameSite=Lax; additionally refuse cross-origin writes outright.
     if (req.method !== "GET" && req.method !== "HEAD" && req.headers.origin) {
       let host = "";
@@ -728,6 +745,74 @@ export async function buildApp(cfg: Config, dbFile = path.join(cfg.dataDir, "pic
 
   const withWhy = (items: PostDTO[], why: (p: PostDTO) => string) => items.map((p) => ({ ...p, why: why(p) }));
 
+  /**
+   * "For you": the one personal ranking, and only for people who choose it.
+   *
+   * Inputs are things the viewer did on purpose — likes, saves, comments,
+   * follows — plus likes from people they follow. It never sees watch time,
+   * scroll speed or anything else passive, and every result states its reason.
+   * Posts the viewer already liked are left out so the stream runs dry
+   * instead of looping.
+   */
+  function forYou(v: number, now: number) {
+    const since = now - 90 * 864e5;
+    const authorAff = new Map<number, number>();
+    const bump = (m: Map<number, number>, k: number, w: number) => m.set(k, (m.get(k) ?? 0) + w);
+    for (const [table, weight] of [["likes", 1], ["saves", 2], ["comments", 1.5]] as const) {
+      for (const r of db.all<{ author: number; n: number }>(
+        `SELECT p.user_id AS author, count(*) AS n FROM ${table} x JOIN posts p ON p.id = x.post_id
+         WHERE x.user_id = ? AND x.created_at > ? AND p.user_id != ? GROUP BY p.user_id`, v, since, v,
+      )) bump(authorAff, r.author, r.n * weight);
+    }
+    const follows = new Set(db.all<{ followee_id: number }>("SELECT followee_id FROM follows WHERE follower_id = ?", v).map((r) => r.followee_id));
+    const tagAff = new Map<string, number>();
+    for (const r of db.all<{ tag: string; n: number }>(
+      `SELECT t.tag, count(*) AS n FROM tags t WHERE t.post_id IN (
+         SELECT post_id FROM likes WHERE user_id = ? AND created_at > ? UNION SELECT post_id FROM saves WHERE user_id = ? AND created_at > ?)
+       GROUP BY t.tag`, v, since, v, since,
+    )) tagAff.set(r.tag, r.n);
+
+    const rows = db.all<PostRow & { friend_likes: number }>(
+      `SELECT p.*, (SELECT count(*) FROM likes l WHERE l.post_id = p.id AND l.user_id IN (SELECT followee_id FROM follows WHERE follower_id = ?)) AS friend_likes
+       FROM posts p WHERE ${PUBLIC} AND p.user_id != ? AND p.created_at > ? AND p.created_at <= ?
+         AND NOT EXISTS (SELECT 1 FROM likes l WHERE l.post_id = p.id AND l.user_id = ?)
+       ORDER BY p.id DESC LIMIT 1500`,
+      v, ...nb(v), v, now - 30 * 864e5, now, v,
+    );
+    const tagsByPost = new Map<number, string[]>();
+    for (let i = 0; i < rows.length; i += 400) {
+      const ids = rows.slice(i, i + 400).map((r) => r.id);
+      for (const t of db.all<{ post_id: number; tag: string }>(`SELECT post_id, tag FROM tags WHERE post_id IN (${qs(ids.length)})`, ...ids)) {
+        tagsByPost.set(t.post_id, [...(tagsByPost.get(t.post_id) ?? []), t.tag]);
+      }
+    }
+    const names = usersById([...new Set(rows.map((r) => r.user_id))]);
+
+    return rows.map((row) => {
+      const author = Math.min(authorAff.get(row.user_id) ?? 0, 6) + (follows.has(row.user_id) ? 2 : 0);
+      let bestTag = "", tagScore = 0;
+      for (const t of tagsByPost.get(row.id) ?? []) {
+        const w = tagAff.get(t) ?? 0;
+        tagScore += w;
+        if (w > (tagAff.get(bestTag) ?? 0)) bestTag = t;
+      }
+      const tags = Math.min(tagScore, 6);
+      const friends = Math.min(row.friend_likes, 5);
+      const popular = Math.log2(1 + row.like_count);
+      const parts = { author: 1.2 * author, tags: 0.8 * tags, friends: 1.0 * friends };
+      const ageDays = (now - row.created_at) / 864e5;
+      const score = (1 + parts.author + parts.tags + parts.friends + 0.4 * popular) / (ageDays + 1) ** 0.8;
+      const name = names.get(row.user_id)?.username ?? "";
+      const top = Math.max(parts.author, parts.tags, parts.friends);
+      const why =
+        top === 0 ? "Recent and well liked — you haven't given us anything else to go on"
+        : top === parts.friends ? `Liked by ${row.friend_likes === 1 ? "someone" : `${row.friend_likes} people`} you follow`
+        : top === parts.author ? (follows.has(row.user_id) ? `You follow @${name}` : `You've liked or saved posts by @${name}`)
+        : `You've liked or saved posts tagged #${bestTag}`;
+      return { row, score, why };
+    }).sort((a, b) => b.score - a.score || b.row.id - a.row.id);
+  }
+
   /** Home: your follows + your own posts, strictly newest first, with a "new since last visit" marker. */
   server.get<{ Querystring: { cursor?: string } }>("/api/feed/home", async (req) => {
     const id = requireUser(req);
@@ -771,7 +856,16 @@ export async function buildApp(cfg: Config, dbFile = path.join(cfg.dataDir, "pic
     // The remaining lenses page by offset; the cursor pins what they sort by so pages don't reshuffle.
     const [offRaw, pinRaw] = (cursor ?? "").split(":");
     const offset = Math.max(Number(offRaw) || 0, 0);
-    if (lens === "loved") {
+    if (lens === "foryou" && v) {
+      const now = Number(pinRaw) || Date.now();
+      const ranked = forYou(v, now);
+      const slice = ranked.slice(offset, offset + PAGE);
+      const why = new Map(slice.map((r) => [r.row.uid, r.why]));
+      const items = hydrate(slice.map((r) => r.row), v);
+      return { lens, items: withWhy(items, (p) => why.get(p.id)!), next: ranked.length > offset + PAGE ? `${offset + PAGE}:${now}` : null };
+    }
+    // Signed out there is nothing personal to rank by, so "For you" shows what's loved.
+    if (lens === "loved" || lens === "foryou") {
       const now = Number(pinRaw) || Date.now();
       const rows = db.all<PostRow>(
         `SELECT p.* FROM posts p WHERE ${PUBLIC} AND p.created_at > ? AND p.created_at <= ? AND p.like_count > 0
@@ -779,7 +873,7 @@ export async function buildApp(cfg: Config, dbFile = path.join(cfg.dataDir, "pic
         ...nb(v), now - 7 * 864e5, now, PAGE + 1, offset,
       );
       const items = hydrate(rows.slice(0, PAGE), v);
-      return { lens, items: withWhy(items, () => "Among the most liked posts of the last 7 days"), next: rows.length > PAGE ? `${offset + PAGE}:${now}` : null };
+      return { lens: "loved" as Lens, items: withWhy(items, () => "Among the most liked posts of the last 7 days"), next: rows.length > PAGE ? `${offset + PAGE}:${now}` : null };
     }
     // shuffle: a fixed pseudo-random order per visit over recent public posts.
     const seed = Math.min(Math.max(Math.floor(Number(pinRaw)) || 1 + Math.floor(Math.random() * 999_983), 1), 999_983);
@@ -1034,6 +1128,8 @@ export async function buildApp(cfg: Config, dbFile = path.join(cfg.dataDir, "pic
     immutable: true,
     maxAge: "365d",
     index: false,
+    // Pictures are public, immutable files; the apps' canvases need to read them.
+    setHeaders: (res) => void res.header("Access-Control-Allow-Origin", "*"),
   });
 
   const dist = path.resolve(import.meta.dirname, "../dist");

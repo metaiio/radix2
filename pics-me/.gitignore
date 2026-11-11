@@ -3,3 +3,4 @@ dist
 data
 .env
 e2e/out
+dist-native

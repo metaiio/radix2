@@ -38,7 +38,7 @@ Copy `.env.example` and set what you need. The ones that matter in production:
 pics.me is built on a few rules that are enforced in code, not just promised (see `/about` in the app, and the "streams" section of `server/app.ts`):
 
 - **Following is your people, in order.** Only accounts you follow, strictly newest first. Nothing is inserted or reordered. It marks what's new since your last visit, tells you when you're caught up, and has a real end.
-- **Discover follows one rule that you pick.** Latest, Loved this week, Fresh voices (under 25 followers), Remixes, or Shuffle. None of them use watch time, taps or any profile of the viewer, and every post can say why it's in front of you.
+- **Discover follows one rule that you pick.** Latest, Loved this week, Fresh voices (under 25 followers), Remixes, Shuffle — or **For you**, the one personal ranking. For you is off unless chosen, uses only deliberate signals (your likes, saves, comments, follows, and likes from people you follow), never watch time or scroll behaviour, skips posts you already liked so it runs dry instead of looping, and states the reason for every pick (`forYou()` in `server/app.ts`).
 - **Your pace.** Optional pause suggestions every N posts, "quiet counts" to hide like/comment numbers, and autoplay you can switch off. No push nudges.
 - **Close circle.** Share a post only with people you chose. Circle posts never reach Discover, search, tags or link previews, and can't be remixed.
 - **AI is a labeled tool.** Everything from the Studio carries a label, credits its source, and creators can switch remixing off.
@@ -99,6 +99,20 @@ Things deliberately left simple that should be decided before a public launch:
 - **Rate limits** are in-memory per process.
 - **Legal** — terms, privacy policy and a takedown process are needed for user-generated content (and are required by both app stores).
 
-## Mobile apps
+## Android and iOS apps
 
-The web app is already installable from the browser. For store builds, the quickest route is wrapping this web build with Capacitor (camera, share sheet and push via plugins); the API already returns a session token for native clients to send as `Authorization: Bearer …`.
+The `android/` and `ios/` folders are native projects (Capacitor) that bundle the same web app and talk to the API at the address in `.env.native` (default `https://pics.me`) using a bearer token instead of a cookie. The server must list the apps' origins in `APP_ORIGINS` (the defaults already match).
+
+```bash
+npm run mobile:android   # builds the bundle, syncs, opens Android Studio  → Run, or Build > Generate Signed Bundle
+npm run mobile:ios       # same for Xcode (macOS only)                     → pick a team under Signing, then Run / Archive
+npm run test:e2e:native  # browser stand-in for the apps' cross-origin, token-auth mode
+```
+
+To point a build at a test server, run `VITE_API_BASE=https://staging.example npm run mobile:sync` and add that build's origin to the server's `APP_ORIGINS` if it differs.
+
+There is also a manually-triggered GitHub Actions workflow (`.github/workflows/pics-me-mobile.yml`) that produces a debug APK and an iOS simulator build.
+
+What is and isn't verified: the bundled, cross-origin mode is covered by `test:e2e:native` in desktop Chromium. The native projects themselves were generated and synced but **not compiled or run on a device** in this repository's environment (no Android SDK or Xcode there), and the CI workflow has not been run yet. Expect a round of on-device fixes — in particular on-device video recording in the iOS WebView and the photo picker on older Android versions.
+
+Before store submission you still need: signing keys / an Apple developer team, store listings and screenshots, a privacy policy URL, age rating answers, and (both stores require these for user-generated content) the in-app report, block and account-deletion flows — which exist. Push notifications are not implemented. The session token is kept in WebView storage; moving it to Keychain/Keystore is a recommended hardening step.

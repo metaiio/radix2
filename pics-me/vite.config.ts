@@ -3,6 +3,7 @@ import react from "@vitejs/plugin-react";
 
 export default defineConfig({
   root: "web",
+  envDir: "..",
   publicDir: "../public",
   plugins: [react()],
   build: { outDir: "../dist", emptyOutDir: true, target: "es2022" },

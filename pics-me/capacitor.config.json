@@ -1,0 +1,9 @@
+{
+  "appId": "me.pics.app",
+  "appName": "pics.me",
+  "webDir": "dist-native",
+  "backgroundColor": "#0b0b0e",
+  "android": { "backgroundColor": "#0b0b0e" },
+  "ios": { "backgroundColor": "#0b0b0e", "contentInset": "never" },
+  "server": { "androidScheme": "https" }
+}

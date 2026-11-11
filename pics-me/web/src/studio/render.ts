@@ -9,6 +9,8 @@ export const FONT = `system-ui, -apple-system, "Segoe UI", Roboto, "Helvetica Ne
 export function loadImage(url: string): Promise<HTMLImageElement> {
   return new Promise((resolve, reject) => {
     const img = new Image();
+    // Pictures may come from another origin (the bundled apps); ask for them in a way canvas can read.
+    img.crossOrigin = "anonymous";
     img.decoding = "async";
     img.onload = () => resolve(img);
     img.onerror = () => reject(new Error("That picture couldn't be loaded."));

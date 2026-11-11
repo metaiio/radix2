@@ -18,6 +18,8 @@ export interface Config {
   rateScale: number;
   /** Usernames allowed to review reports. */
   admins: string[];
+  /** Origins of the bundled Android/iOS apps, which call the API cross-origin with bearer tokens. */
+  appOrigins: string[];
 }
 
 export function loadConfig(overrides: Partial<Config> = {}): Config {
@@ -34,6 +36,7 @@ export function loadConfig(overrides: Partial<Config> = {}): Config {
     production: env.NODE_ENV === "production",
     rateScale: num(env.RATE_SCALE, 1),
     admins: (env.ADMIN_USERS ?? "").split(",").map((s) => s.trim().toLowerCase()).filter(Boolean),
+    appOrigins: (env.APP_ORIGINS ?? "capacitor://localhost,https://localhost").split(",").map((s) => s.trim()).filter(Boolean),
     ...overrides,
   };
 }

@@ -3,6 +3,7 @@ import { createPortal } from "react-dom";
 import type { GameType, MediaDTO, PostDTO, ScoreDTO } from "../../shared/types.ts";
 import { spotLayout } from "../../shared/spot.ts";
 import { api } from "./api.ts";
+import { share as shareLink, SITE } from "./platform.ts";
 import { useLocation, useSession } from "./state.tsx";
 import { Avatar, clock, Icon } from "./ui.tsx";
 
@@ -30,6 +31,7 @@ function useSquare(media: MediaDTO) {
     let made: string | null = null;
     let dead = false;
     const img = new Image();
+    img.crossOrigin = "anonymous";
     img.onload = () => {
       const side = Math.min(img.naturalWidth, img.naturalHeight);
       const c = document.createElement("canvas");
@@ -377,15 +379,8 @@ export function GamePlayer({ post, onClose }: { post: PostDTO; onClose: () => vo
           <button
             className="btn btn-spark"
             onClick={async () => {
-              const url = `${location.origin}/p/${post.id}`;
               const text = `I finished this ${GAME_NAMES[game.type].toLowerCase()} in ${clock(result)} on pics.me. Beat that.`;
-              try {
-                if (navigator.share) await navigator.share({ text, url });
-                else {
-                  await navigator.clipboard.writeText(`${text} ${url}`);
-                  toast("Challenge copied — paste it to a friend");
-                }
-              } catch { /* dismissed */ }
+              if ((await shareLink({ text, url: `${SITE}/p/${post.id}` })) === "copied") toast("Challenge copied — paste it to a friend");
             }}
           >
             <Icon name="share" size={18} /> Challenge a friend

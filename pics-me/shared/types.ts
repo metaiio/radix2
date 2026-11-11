@@ -4,13 +4,17 @@ export type PostKind = "photo" | "video" | "ad" | "game";
 export type GameType = "slide" | "swap" | "memory" | "spot";
 export type Visibility = "public" | "circle";
 
-/** Discover lenses. Each is one plain rule; none uses what you watched, liked or lingered on. */
+/**
+ * Discover lenses. Each is one plain rule. Only "For you" is personal, and only when you
+ * pick it: it uses your own likes, saves, comments and follows. Nothing uses watch time.
+ */
 export const LENSES = {
   latest: { name: "Latest", rule: "Every public post, newest first." },
   loved: { name: "Loved this week", rule: "Public posts from the last 7 days, most likes first." },
   fresh: { name: "Fresh voices", rule: "Newest posts from people with fewer than 25 followers." },
   remixes: { name: "Remixes", rule: "Videos, ads and games made in the Studio, newest first." },
   shuffle: { name: "Shuffle", rule: "Public posts in random order. No ranking at all." },
+  foryou: { name: "For you", rule: "Ranked by your own likes, saves, comments and follows. Never by watch time. Only on if you pick it." },
 } as const;
 export type Lens = keyof typeof LENSES;
 
