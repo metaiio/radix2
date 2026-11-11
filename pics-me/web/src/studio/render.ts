@@ -2,6 +2,7 @@
 // server (and the AI) only ever plan the edit, they never see or ship pixels.
 
 import type { AdCopy, CameraMove, Storyboard } from "../../../shared/types.ts";
+import { scheduleMusic, type Soundtrack } from "./music.ts";
 
 export const FONT = `system-ui, -apple-system, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif`;
 
@@ -133,12 +134,15 @@ export const VIDEO_FORMATS = {
 export type VideoFormat = keyof typeof VIDEO_FORMATS;
 
 export function videoSupported() {
-  return typeof MediaRecorder !== "undefined" && typeof HTMLCanvasElement.prototype.captureStream === "function" && pickMime() !== "";
+  return typeof MediaRecorder !== "undefined" && typeof HTMLCanvasElement.prototype.captureStream === "function" && pickMime(false) !== "";
 }
 
-function pickMime() {
+function pickMime(audio: boolean) {
   if (typeof MediaRecorder === "undefined") return "";
-  return ["video/mp4;codecs=avc1.42E01E", "video/webm;codecs=vp9", "video/webm;codecs=vp8", "video/webm"].find((m) => MediaRecorder.isTypeSupported(m)) ?? "";
+  const options = audio
+    ? ["video/mp4;codecs=avc1.42E01E,mp4a.40.2", "video/webm;codecs=vp9,opus", "video/webm;codecs=vp8,opus", "video/webm"]
+    : ["video/mp4;codecs=avc1.42E01E", "video/webm;codecs=vp9", "video/webm;codecs=vp8", "video/webm"];
+  return options.find((m) => MediaRecorder.isTypeSupported(m)) ?? "";
 }
 
 const XFADE = 0.4;
@@ -150,7 +154,14 @@ const XFADE = 0.4;
 export async function renderVideo(
   images: HTMLImageElement[],
   board: Storyboard,
-  opts: { format: VideoFormat; canvas?: HTMLCanvasElement; onProgress?: (p: number) => void; signal?: AbortSignal },
+  opts: {
+    format: VideoFormat;
+    canvas?: HTMLCanvasElement;
+    onProgress?: (p: number) => void;
+    signal?: AbortSignal;
+    /** A running AudioContext (created inside the user's tap) and the soundtrack to synthesise into the recording. */
+    music?: { ctx: AudioContext; style: Exclude<Soundtrack, "none"> };
+  },
 ): Promise<VideoResult> {
   const { width: W, height: H } = VIDEO_FORMATS[opts.format];
   const canvas = opts.canvas ?? document.createElement("canvas");
@@ -194,8 +205,15 @@ export async function renderVideo(
   const poster = await new Promise<Blob>((res, rej) => canvas.toBlob((b) => (b ? res(b) : rej(new Error("Couldn't capture a poster frame."))), "image/jpeg", 0.86));
   frame(0);
 
-  const mimeType = pickMime();
-  const stream = canvas.captureStream(30);
+  const mimeType = pickMime(!!opts.music);
+  let stream = canvas.captureStream(30);
+  if (opts.music) {
+    const { ctx: actx, style } = opts.music;
+    await actx.resume().catch(() => {});
+    const dest = actx.createMediaStreamDestination();
+    scheduleMusic(actx, dest, style, total);
+    stream = new MediaStream([...stream.getVideoTracks(), ...dest.stream.getAudioTracks()]);
+  }
   const recorder = new MediaRecorder(stream, { mimeType, videoBitsPerSecond: 3_500_000 });
   const chunks: Blob[] = [];
   recorder.ondataavailable = (e) => e.data.size && chunks.push(e.data);

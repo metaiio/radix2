@@ -1,5 +1,6 @@
 import type {
-  AdCopy, CaptionSuggestion, CommentDTO, MediaDTO, Page, PostDTO, PostKind, PostMeta, ProfileDTO, ScoreDTO, Storyboard, UserDTO,
+  AdCopy, CaptionSuggestion, CommentDTO, Lens, MediaDTO, NotificationDTO, Page, PostDTO, PostKind, PostMeta, ProfileDTO, ReportDTO, ScoreDTO, Settings,
+  Storyboard, UserDTO, Visibility,
 } from "../../shared/types.ts";
 
 export class ApiError extends Error {
@@ -35,6 +36,9 @@ const q = (cursor?: string | null) => (cursor ? `cursor=${encodeURIComponent(cur
 export interface Me extends UserDTO {
   bio: string;
   email: string;
+  settings: Settings;
+  unread: number;
+  isAdmin: boolean;
 }
 
 export interface NewPost {
@@ -43,6 +47,7 @@ export interface NewPost {
   mediaIds: string[];
   remixOf?: string;
   allowRemix?: boolean;
+  visibility?: Visibility;
   meta?: PostMeta;
 }
 
@@ -51,10 +56,20 @@ export const api = {
   signup: (b: { username: string; email: string; password: string }) => post<{ user: Me }>("/api/auth/signup", b),
   login: (b: { login: string; password: string }) => post<{ user: Me }>("/api/auth/login", b),
   logout: () => post("/api/auth/logout"),
-  updateMe: (b: { displayName?: string; bio?: string; avatarMediaId?: string | null }) => request<{ user: Me }>("PATCH", "/api/me", b),
+  updateMe: (b: { displayName?: string; bio?: string; avatarMediaId?: string | null; settings?: Partial<Settings> }) => request<{ user: Me }>("PATCH", "/api/me", b),
   deleteMe: (password: string) => del("/api/me", { password }),
 
-  feed: (tab: "foryou" | "following", cursor?: string | null) => get<Page<PostDTO>>(`/api/feed?tab=${tab}&${q(cursor)}`),
+  home: (cursor?: string | null) => get<Page<PostDTO>>(`/api/feed/home?${q(cursor)}`),
+  discover: (lens: Lens, cursor?: string | null) => get<Page<PostDTO>>(`/api/feed/discover?lens=${lens}&${q(cursor)}`),
+  saved: (cursor?: string | null) => get<Page<PostDTO>>(`/api/saved?${q(cursor)}`),
+  save: (id: string, on: boolean) => request<{ saved: boolean }>(on ? "POST" : "DELETE", `/api/posts/${id}/save`),
+  notifications: () => get<{ items: NotificationDTO[] }>("/api/notifications"),
+  circle: () => get<{ members: UserDTO[] }>("/api/circle"),
+  setCircle: (username: string, on: boolean) => request<{ inMyCircle: boolean }>(on ? "PUT" : "DELETE", `/api/circle/${encodeURIComponent(username)}`),
+  block: (username: string, on: boolean) => request<{ blocked: boolean }>(on ? "POST" : "DELETE", `/api/users/${encodeURIComponent(username)}/block`),
+  blocks: () => get<{ users: UserDTO[] }>("/api/blocks"),
+  adminReports: () => get<{ reports: ReportDTO[] }>("/api/admin/reports"),
+  adminResolve: (postId: string, action: "dismiss" | "remove") => post(`/api/admin/reports/${postId}`, { action }),
   explore: () => get<{ tags: { tag: string; n: number }[]; posts: PostDTO[] }>("/api/explore"),
   search: (term: string) => get<{ users: UserDTO[]; tags: { tag: string; n: number }[]; posts: PostDTO[] }>(`/api/search?q=${encodeURIComponent(term)}`),
   tagPosts: (tag: string, cursor?: string | null) => get<Page<PostDTO>>(`/api/tags/${encodeURIComponent(tag)}/posts?${q(cursor)}`),

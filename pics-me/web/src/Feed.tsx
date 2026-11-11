@@ -1,4 +1,4 @@
-import { memo, useCallback, useEffect, useRef, useState } from "react";
+import { memo, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import type { CommentDTO, MediaDTO, Page, PostDTO } from "../../shared/types.ts";
 import { api, ApiError } from "./api.ts";
 import { GamePlayer, GAME_NAMES } from "./games.tsx";
@@ -10,15 +10,26 @@ const SIZES = "(min-width: 900px) 500px, 100vw";
 /** Shared across cards so un-muting once applies to the whole session. */
 let soundOn = false;
 
+type Slot =
+  | { t: "post"; key: string; post: PostDTO }
+  | { t: "caught"; key: string; anyNew: boolean }
+  | { t: "break"; key: string; seen: number }
+  | { t: "end"; key: string };
+
 // ---------------------------------------------------------------------------
 
-export function Feed({ load, active, feedKey, emptyState }: {
+export function Feed({ load, active, feedKey, emptyState, endState, breaks = false }: {
   load: (cursor: string | null) => Promise<Page<PostDTO>>;
   /** False while another page covers the feed — pauses video and key handling. */
   active: boolean;
   feedKey: string;
   emptyState: React.ReactNode;
+  /** Shown as the last card once everything has been loaded. Streams here end. */
+  endState?: React.ReactNode;
+  /** Offer a pause every `settings.breakEvery` posts. */
+  breaks?: boolean;
 }) {
+  const { settings } = useSession();
   const [items, setItems] = useState<PostDTO[]>([]);
   const [next, setNext] = useState<string | null>(null);
   const [status, setStatus] = useState<"loading" | "ready" | "error">("loading");
@@ -40,7 +51,7 @@ export function Feed({ load, active, feedKey, emptyState }: {
       setNext(page.next);
       setStatus("ready");
     } catch (err) {
-      setError(err instanceof ApiError ? err.message : "Couldn't load the feed.");
+      setError(err instanceof ApiError ? err.message : "Couldn't load the stream.");
       setStatus((s) => (s === "loading" ? "error" : s));
     } finally {
       busy.current = false;
@@ -55,6 +66,24 @@ export function Feed({ load, active, feedKey, emptyState }: {
     void fetchPage(null, true);
   }, [feedKey, fetchPage]);
 
+  // Posts, plus the honest markers between them: where "new" stops, when to
+  // take a breath, and where the stream ends.
+  const every = breaks ? settings.breakEvery : 0;
+  const slots = useMemo(() => {
+    const out: Slot[] = [];
+    let caught = false;
+    items.forEach((post, i) => {
+      if (post.fresh === false && !caught) {
+        caught = true;
+        out.push({ t: "caught", key: "caught", anyNew: i > 0 });
+      }
+      if (every > 0 && i > 0 && i % every === 0) out.push({ t: "break", key: `break-${i}`, seen: i });
+      out.push({ t: "post", key: post.id, post });
+    });
+    if (items.length && !next && endState) out.push({ t: "end", key: "end" });
+    return out;
+  }, [items, next, every, endState]);
+
   // Which card is on screen?
   useEffect(() => {
     const root = scroller.current;
@@ -67,11 +96,11 @@ export function Feed({ load, active, feedKey, emptyState }: {
     );
     root.querySelectorAll("[data-index]").forEach((el) => io.observe(el));
     return () => io.disconnect();
-  }, [items.length]);
+  }, [slots.length]);
 
   useEffect(() => {
-    if (status === "ready" && next && current >= items.length - 4) void fetchPage(next, false);
-  }, [current, items.length, next, status, fetchPage]);
+    if (status === "ready" && next && current >= slots.length - 4) void fetchPage(next, false);
+  }, [current, slots.length, next, status, fetchPage]);
 
   const step = useCallback((dir: 1 | -1) => {
     const root = scroller.current;
@@ -82,7 +111,7 @@ export function Feed({ load, active, feedKey, emptyState }: {
     if (!active) return;
     const onKey = (e: KeyboardEvent) => {
       const t = e.target as HTMLElement;
-      if (t.closest("input, textarea, [role=dialog]")) return;
+      if (t.closest("input, textarea, select, [role=dialog]")) return;
       if (e.key === "ArrowDown" || e.key === "j") (e.preventDefault(), step(1));
       if (e.key === "ArrowUp" || e.key === "k") (e.preventDefault(), step(-1));
     };
@@ -106,15 +135,39 @@ export function Feed({ load, active, feedKey, emptyState }: {
         </div>
       )}
       {status === "ready" && items.length === 0 && <div className="feed-msg">{emptyState}</div>}
-      {items.map((post, i) => (
-        <div className="feed-slot" key={post.id} data-index={i}>
-          <PostCard post={post} near={Math.abs(i - current) <= 1} playing={active && i === current} onPatch={patch} onRemoved={remove} />
+      {slots.map((slot, i) => (
+        <div className="feed-slot" key={slot.key} data-index={i}>
+          {slot.t === "post" ? (
+            <PostCard post={slot.post} near={Math.abs(i - current) <= 1} playing={active && i === current} onPatch={patch} onRemoved={remove} />
+          ) : slot.t === "caught" ? (
+            <div className="marker">
+              <span className="marker-icon"><Icon name="check" size={34} /></span>
+              <h2>You're all caught up</h2>
+              <p>{slot.anyNew ? "That's everything new since your last visit." : "Nothing new since your last visit."} Earlier posts are below if you want them.</p>
+              <div className="marker-actions">
+                <Link to="/discover" className="btn">Go to Discover</Link>
+                <button className="btn btn-ghost" onClick={() => step(1)}>See earlier posts</button>
+              </div>
+            </div>
+          ) : slot.t === "break" ? (
+            <div className="marker">
+              <span className="marker-icon"><Icon name="eye" size={34} /></span>
+              <h2>{slot.seen} posts in</h2>
+              <p>A natural place to stop. The rest will still be here later.</p>
+              <div className="marker-actions">
+                <button className="btn btn-ghost" onClick={() => step(1)}>Keep going</button>
+                <Link to="/settings" className="btn btn-ghost">Change this reminder</Link>
+              </div>
+            </div>
+          ) : (
+            <div className="marker">{endState}</div>
+          )}
         </div>
       ))}
-      {items.length > 1 && (
+      {slots.length > 1 && (
         <div className="feed-arrows">
           <button className="icon-btn solid" onClick={() => step(-1)} disabled={current === 0} aria-label="Previous post"><span className="rot90"><Icon name="back" /></span></button>
-          <button className="icon-btn solid" onClick={() => step(1)} disabled={current >= items.length - 1} aria-label="Next post"><span className="rot270"><Icon name="back" /></span></button>
+          <button className="icon-btn solid" onClick={() => step(1)} disabled={current >= slots.length - 1} aria-label="Next post"><span className="rot270"><Icon name="back" /></span></button>
         </div>
       )}
     </div>
@@ -135,10 +188,10 @@ function Slide({ media, eager }: { media: MediaDTO; eager: boolean }) {
   );
 }
 
-function VideoSlide({ media, playing }: { media: MediaDTO; playing: boolean }) {
+function VideoSlide({ media, playing, autoplay }: { media: MediaDTO; playing: boolean; autoplay: boolean }) {
   const ref = useRef<HTMLVideoElement>(null);
   const [muted, setMuted] = useState(!soundOn);
-  const [paused, setPaused] = useState(false);
+  const [paused, setPaused] = useState(!autoplay);
 
   useEffect(() => {
     const v = ref.current;
@@ -156,10 +209,10 @@ function VideoSlide({ media, playing }: { media: MediaDTO; playing: boolean }) {
       v.pause();
       if (!playing) {
         v.currentTime = 0;
-        setPaused(false);
+        setPaused(!autoplay);
       }
     }
-  }, [playing, paused]);
+  }, [playing, paused, autoplay]);
 
   const v = media.video!;
   return (
@@ -219,21 +272,35 @@ export const PostCard = memo(function PostCard({ post, near, playing, onPatch, o
   onPatch: (id: string, change: Partial<PostDTO>) => void;
   onRemoved: (id: string) => void;
 }) {
-  const { user, requireAuth, toast } = useSession();
+  const { user, settings, requireAuth, toast } = useSession();
   const [sheet, setSheet] = useState<null | "comments" | "menu" | "game">(null);
   const [burst, setBurst] = useState(0);
   const [expanded, setExpanded] = useState(false);
   const first = post.media[0];
+  const mine = user?.username === post.author.username;
+  const quiet = settings.quietCounts;
+  const fail = (err: unknown, fallback: string) => toast(err instanceof ApiError ? err.message : fallback);
 
   const setLike = async (on: boolean) => {
     if (!requireAuth() || on === post.liked) return;
     onPatch(post.id, { liked: on, likeCount: post.likeCount + (on ? 1 : -1) });
     try {
-      const r = await api.like(post.id, on);
-      onPatch(post.id, r);
+      onPatch(post.id, await api.like(post.id, on));
     } catch (err) {
       onPatch(post.id, { liked: post.liked, likeCount: post.likeCount });
-      toast(err instanceof ApiError ? err.message : "Couldn't save your like.");
+      fail(err, "Couldn't save your like.");
+    }
+  };
+
+  const setSaved = async (on: boolean) => {
+    if (!requireAuth()) return;
+    onPatch(post.id, { saved: on });
+    try {
+      await api.save(post.id, on);
+      if (on) toast("Saved — find it on your profile");
+    } catch (err) {
+      onPatch(post.id, { saved: !on });
+      fail(err, "Couldn't save the post.");
     }
   };
 
@@ -249,6 +316,7 @@ export const PostCard = memo(function PostCard({ post, near, playing, onPatch, o
   };
 
   const long = post.caption.length > 110;
+  const isPublic = post.visibility === "public";
 
   return (
     <article className="card" style={{ backgroundColor: first?.color }} aria-label={`Post by ${post.author.username}`}>
@@ -260,7 +328,7 @@ export const PostCard = memo(function PostCard({ post, near, playing, onPatch, o
         }}
       >
         {near && first && (post.kind === "video" && first.video ? (
-          <VideoSlide media={first} playing={playing} />
+          <VideoSlide media={first} playing={playing} autoplay={settings.autoplay} />
         ) : post.media.length > 1 ? (
           <Carousel media={post.media} eager={playing} />
         ) : (
@@ -276,13 +344,17 @@ export const PostCard = memo(function PostCard({ post, near, playing, onPatch, o
       )}
 
       <div className="card-info">
-        {post.kind !== "photo" && (
-          <span className={`badge badge-${post.kind}`}>
-            <Icon name={post.kind === "video" ? "film" : post.kind === "ad" ? "megaphone" : "puzzle"} size={13} />
-            {post.kind === "video" ? "Video" : post.kind === "ad" ? "Ad" : "Game"}
-            {post.remixOf && <> · remix of <Link to={`/p/${post.remixOf.id}`}>@{post.remixOf.author}</Link></>}
-          </span>
-        )}
+        <div className="badges">
+          {post.fresh && <span className="badge badge-new">New</span>}
+          {!isPublic && <span className="badge"><Icon name="lock" size={13} /> Close circle</span>}
+          {post.kind !== "photo" && (
+            <span className={`badge badge-${post.kind}`}>
+              <Icon name={post.kind === "video" ? "film" : post.kind === "ad" ? "megaphone" : "puzzle"} size={13} />
+              {post.kind === "video" ? "Studio video" : post.kind === "ad" ? "Studio ad" : "Studio game"}
+              {post.remixOf && <> · remix of <Link to={`/p/${post.remixOf.id}`}>@{post.remixOf.author}</Link></>}
+            </span>
+          )}
+        </div>
         <Link to={`/u/${post.author.username}`} className="card-author">
           <Avatar user={post.author} size={36} />
           <span>
@@ -300,26 +372,27 @@ export const PostCard = memo(function PostCard({ post, near, playing, onPatch, o
             {post.meta.ad.cta || "Learn more"} <Icon name="link" size={15} />
           </a>
         )}
+        {post.why && <button className="why" onClick={() => setSheet("menu")}><Icon name="info" size={13} /> {post.why}</button>}
       </div>
 
       <div className="rail">
         <button className={"rail-btn" + (post.liked ? " liked" : "")} onClick={() => void setLike(!post.liked)} aria-pressed={post.liked} aria-label={post.liked ? "Unlike" : "Like"}>
           <Icon name="heart" size={30} fill={post.liked} />
-          <span>{compact(post.likeCount)}</span>
+          <span>{quiet ? "Like" : compact(post.likeCount)}</span>
         </button>
         <button className="rail-btn" onClick={() => setSheet("comments")} aria-label="Comments">
           <Icon name="comment" size={30} />
-          <span>{compact(post.commentCount)}</span>
+          <span>{quiet ? "Talk" : compact(post.commentCount)}</span>
         </button>
         {post.allowRemix && (
-          <button className="rail-btn rail-remix" onClick={() => requireAuth() && navigate(`/studio/${post.id}`)} aria-label="Remix with AI">
+          <button className="rail-btn rail-remix" onClick={() => requireAuth() && navigate(`/studio/${post.id}`)} aria-label="Remix in Studio">
             <Icon name="spark" size={30} />
-            <span>{post.remixCount ? compact(post.remixCount) : "Remix"}</span>
+            <span>{!quiet && post.remixCount ? compact(post.remixCount) : "Remix"}</span>
           </button>
         )}
-        <button className="rail-btn" onClick={() => void share()} aria-label="Share">
-          <Icon name="share" size={28} />
-          <span>Share</span>
+        <button className={"rail-btn" + (post.saved ? " saved" : "")} onClick={() => void setSaved(!post.saved)} aria-pressed={post.saved} aria-label={post.saved ? "Remove from saved" : "Save"}>
+          <Icon name="bookmark" size={28} fill={post.saved} />
+          <span>{post.saved ? "Saved" : "Save"}</span>
         </button>
         <button className="rail-btn" onClick={() => setSheet("menu")} aria-label="More options">
           <Icon name="more" size={28} />
@@ -331,11 +404,22 @@ export const PostCard = memo(function PostCard({ post, near, playing, onPatch, o
       )}
       {sheet === "game" && <GamePlayer post={post} onClose={() => setSheet(null)} />}
       {sheet === "menu" && (
-        <Sheet title="Post options" onClose={() => setSheet(null)}>
+        <Sheet title="About this post" onClose={() => setSheet(null)}>
+          <div className="facts">
+            {post.why && <p><Icon name="info" size={18} /><span><strong>Why it's here.</strong> {post.why}. <Link to="/about" className="tag">How the stream works</Link></span></p>}
+            {post.kind !== "photo" && (
+              <p><Icon name="spark" size={18} /><span>
+                <strong>Made in the Studio.</strong>{" "}
+                {post.kind === "video" ? "Still pictures animated into a video." : post.kind === "ad" ? "Ad layout composed over a picture." : "A game built from a picture."}{" "}
+                {post.meta.ai === "claude" ? "AI wrote the text or planned the edit." : post.meta.ai === "local" ? "Text started from a template." : ""}
+              </span></p>
+            )}
+            {!isPublic && <p><Icon name="lock" size={18} /><span><strong>Close circle.</strong> Only people @{post.author.username} chose can see this.</span></p>}
+          </div>
           <div className="menu">
-            <button onClick={() => (setSheet(null), void share())}><Icon name="share" size={20} /> Share link</button>
+            {isPublic && <button onClick={() => (setSheet(null), void share())}><Icon name="share" size={20} /> Share link</button>}
             <button onClick={() => (setSheet(null), navigate(`/p/${post.id}`))}><Icon name="image" size={20} /> Open post</button>
-            {user?.username === post.author.username ? (
+            {mine ? (
               <button
                 className="danger"
                 onClick={async () => {
@@ -347,29 +431,48 @@ export const PostCard = memo(function PostCard({ post, near, playing, onPatch, o
                     if (location.pathname.startsWith("/p/")) refreshFeeds();
                     toast("Post deleted");
                   } catch (err) {
-                    toast(err instanceof ApiError ? err.message : "Couldn't delete the post.");
+                    fail(err, "Couldn't delete the post.");
                   }
                 }}
               >
                 <Icon name="trash" size={20} /> Delete post
               </button>
             ) : (
-              <button
-                onClick={async () => {
-                  if (!requireAuth()) return;
-                  const reason = prompt("What's wrong with this post?");
-                  if (!reason?.trim()) return;
-                  try {
-                    await api.report(post.id, reason);
-                    toast("Thanks — we'll take a look.");
-                  } catch (err) {
-                    toast(err instanceof ApiError ? err.message : "Couldn't send the report.");
-                  }
-                  setSheet(null);
-                }}
-              >
-                <Icon name="flag" size={20} /> Report
-              </button>
+              <>
+                <button
+                  onClick={async () => {
+                    if (!requireAuth()) return;
+                    const reason = prompt("What's wrong with this post?");
+                    if (!reason?.trim()) return;
+                    try {
+                      await api.report(post.id, reason);
+                      toast("Thanks — a person will review it.");
+                    } catch (err) {
+                      fail(err, "Couldn't send the report.");
+                    }
+                    setSheet(null);
+                  }}
+                >
+                  <Icon name="flag" size={20} /> Report
+                </button>
+                <button
+                  className="danger"
+                  onClick={async () => {
+                    if (!requireAuth() || !confirm(`Block @${post.author.username}? You won't see each other's posts or comments.`)) return;
+                    try {
+                      await api.block(post.author.username, true);
+                      setSheet(null);
+                      onRemoved(post.id);
+                      refreshFeeds();
+                      toast(`Blocked @${post.author.username}`);
+                    } catch (err) {
+                      fail(err, "Couldn't block this account.");
+                    }
+                  }}
+                >
+                  <Icon name="shield" size={20} /> Block @{post.author.username}
+                </button>
+              </>
             )}
           </div>
         </Sheet>
@@ -381,7 +484,7 @@ export const PostCard = memo(function PostCard({ post, near, playing, onPatch, o
 // ---------------------------------------------------------------------------
 
 function Comments({ post, onClose, onCount }: { post: PostDTO; onClose: () => void; onCount: (n: number) => void }) {
-  const { user, requireAuth, toast } = useSession();
+  const { user, settings, requireAuth, toast } = useSession();
   const [items, setItems] = useState<CommentDTO[] | null>(null);
   const [next, setNext] = useState<string | null>(null);
   const [text, setText] = useState("");
@@ -407,7 +510,7 @@ function Comments({ post, onClose, onCount }: { post: PostDTO; onClose: () => vo
   };
 
   return (
-    <Sheet title={`Comments${post.commentCount ? ` · ${post.commentCount}` : ""}`} onClose={onClose} tall>
+    <Sheet title={`Comments${post.commentCount && !settings.quietCounts ? ` · ${post.commentCount}` : ""}`} onClose={onClose} tall>
       <div className="comments">
         {items === null && <Spinner />}
         {items?.length === 0 && <Empty title="No comments yet"><p>Say something nice.</p></Empty>}

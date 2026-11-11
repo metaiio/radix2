@@ -1,15 +1,17 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { createPortal } from "react-dom";
 import type { GameType, MediaDTO, PostDTO, ScoreDTO } from "../../shared/types.ts";
+import { spotLayout } from "../../shared/spot.ts";
 import { api } from "./api.ts";
 import { useLocation, useSession } from "./state.tsx";
 import { Avatar, clock, Icon } from "./ui.tsx";
 
-export const GAME_NAMES: Record<GameType, string> = { slide: "Slide puzzle", swap: "Tile swap", memory: "Memory match" };
+export const GAME_NAMES: Record<GameType, string> = { slide: "Slide puzzle", swap: "Tile swap", memory: "Memory match", spot: "Spot the difference" };
 export const GAME_HELP: Record<GameType, string> = {
   slide: "Slide tiles into the empty space until the picture is whole.",
   swap: "Tap two tiles to swap them. Put the picture back together.",
   memory: "Flip two cards at a time and find the matching pieces.",
+  spot: "The second picture has been changed in a few places. Tap each change.",
 };
 
 const shuffle = <T,>(arr: T[]) => {
@@ -61,6 +63,7 @@ interface BoardProps {
   onMove: () => void;
   onWin: () => void;
   locked: boolean;
+  seed: number;
 }
 
 function SlideBoard({ url, n, onMove, onWin, locked }: BoardProps) {
@@ -188,8 +191,95 @@ function MemoryBoard({ url, onMove, onWin, locked }: BoardProps) {
   );
 }
 
+function SpotBoard({ url, n, seed, onMove, onWin, locked }: BoardProps) {
+  const spots = useMemo(() => spotLayout(seed, n), [seed, n]);
+  const [changed, setChanged] = useState<string | null>(null);
+  const [found, setFound] = useState<Set<number>>(new Set());
+  const [miss, setMiss] = useState<{ x: number; y: number; id: number } | null>(null);
+
+  // Paint the changed copy: each spot is a soft-edged circle with its colour shifted.
+  useEffect(() => {
+    let dead = false;
+    let made: string | null = null;
+    const img = new Image();
+    img.onload = () => {
+      const S = img.naturalWidth;
+      const c = document.createElement("canvas");
+      c.width = c.height = S;
+      const ctx = c.getContext("2d")!;
+      ctx.drawImage(img, 0, 0);
+      spots.forEach((s, i) => {
+        const x = s.x * S, y = s.y * S, r = s.r * S;
+        ctx.save();
+        ctx.beginPath();
+        ctx.arc(x, y, r, 0, Math.PI * 2);
+        ctx.clip();
+        if (i % 2) {
+          // Mirror the patch, then tint it.
+          ctx.translate(x * 2, 0);
+          ctx.scale(-1, 1);
+          ctx.drawImage(img, 0, 0);
+          ctx.setTransform(1, 0, 0, 1, 0, 0);
+        }
+        ctx.globalCompositeOperation = "color";
+        ctx.fillStyle = `hsl(${s.hue} 95% 55%)`;
+        ctx.fillRect(x - r, y - r, r * 2, r * 2);
+        ctx.globalCompositeOperation = "soft-light";
+        ctx.fillStyle = i % 3 ? "#fff" : "#000";
+        ctx.globalAlpha = 0.55;
+        ctx.fillRect(x - r, y - r, r * 2, r * 2);
+        ctx.restore();
+      });
+      c.toBlob((b) => {
+        if (!b || dead) return;
+        made = URL.createObjectURL(b);
+        setChanged(made);
+      }, "image/jpeg", 0.9);
+    };
+    img.src = url;
+    return () => {
+      dead = true;
+      if (made) URL.revokeObjectURL(made);
+    };
+  }, [url, spots]);
+
+  const tap = (e: React.PointerEvent<HTMLDivElement>) => {
+    if (locked) return;
+    const box = e.currentTarget.getBoundingClientRect();
+    const x = (e.clientX - box.left) / box.width, y = (e.clientY - box.top) / box.height;
+    onMove();
+    const hit = spots.findIndex((s, i) => !found.has(i) && Math.hypot(s.x - x, s.y - y) <= s.r * 1.5);
+    if (hit < 0) return setMiss({ x, y, id: Date.now() });
+    const next = new Set(found).add(hit);
+    setFound(next);
+    if (next.size === spots.length) onWin();
+  };
+
+  const rings = (
+    <>
+      {spots.map((s, i) => found.has(i) && (
+        <span key={i} className="spot-ring" style={{ left: `${s.x * 100}%`, top: `${s.y * 100}%`, width: `${s.r * 260}%`, height: `${s.r * 260}%` }} />
+      ))}
+    </>
+  );
+
+  return (
+    <div className="spot-pair">
+      <div className="board" style={{ backgroundImage: `url(${url})` }} onPointerDown={tap} role="img" aria-label="Original picture">
+        <span className="spot-label">Original</span>
+        {rings}
+      </div>
+      <div className="board" style={changed ? { backgroundImage: `url(${changed})` } : undefined} onPointerDown={tap} role="img" aria-label="Changed picture" data-ready={changed ? "1" : "0"}>
+        <span className="spot-label">{found.size} of {spots.length} found</span>
+        {rings}
+        {miss && <span key={miss.id} className="spot-miss" style={{ left: `${miss.x * 100}%`, top: `${miss.y * 100}%` }} />}
+      </div>
+    </div>
+  );
+}
+
 /** A playable game built from one picture. Used in the feed overlay and the Studio preview. */
-export function Game({ media, type, size, onWin }: { media: MediaDTO; type: GameType; size: number; onWin?: (ms: number, moves: number) => void }) {
+export function Game({ media, type, size, seed = 1, onWin }: { media: MediaDTO; type: GameType; size: number; seed?: number; onWin?: (ms: number, moves: number) => void }) {
   const url = useSquare(media);
   const [round, setRound] = useState(0);
   const [moves, setMoves] = useState(0);
@@ -233,15 +323,15 @@ export function Game({ media, type, size, onWin }: { media: MediaDTO; type: Game
   }, [onWin]);
 
   if (!url) return <div className="board board-loading" />;
-  const Board = type === "slide" ? SlideBoard : type === "swap" ? SwapBoard : MemoryBoard;
+  const Board = type === "slide" ? SlideBoard : type === "swap" ? SwapBoard : type === "spot" ? SpotBoard : MemoryBoard;
   return (
     <div className="game">
       <div className="game-stats">
         <span><small>Time</small><b>{clock(elapsed)}</b></span>
         <span><small>Moves</small><b>{moves}</b></span>
-        <button className="btn btn-ghost btn-small" onClick={() => setRound((r) => r + 1)}><Icon name="refresh" size={16} /> {won ? "Play again" : "Shuffle"}</button>
+        <button className="btn btn-ghost btn-small" onClick={() => setRound((r) => r + 1)}><Icon name="refresh" size={16} /> {won ? "Play again" : type === "spot" ? "Start over" : "Shuffle"}</button>
       </div>
-      <Board key={`${type}-${size}-${round}`} url={url} n={size} onMove={move} onWin={win} locked={won} />
+      <Board key={`${type}-${size}-${seed}-${round}`} url={url} n={size} seed={seed} onMove={move} onWin={win} locked={won} />
       <p className="game-help" role="status">{won ? `Solved in ${clock(elapsed)} with ${moves} moves.` : GAME_HELP[type]}</p>
     </div>
   );
@@ -251,6 +341,7 @@ export function Game({ media, type, size, onWin }: { media: MediaDTO; type: Game
 export function GamePlayer({ post, onClose }: { post: PostDTO; onClose: () => void }) {
   const { user, toast } = useSession();
   const [scores, setScores] = useState<ScoreDTO[]>([]);
+  const [result, setResult] = useState<number | null>(null);
   const game = post.meta.game!;
   const { path } = useLocation();
   const opened = useRef(path);
@@ -268,6 +359,7 @@ export function GamePlayer({ post, onClose }: { post: PostDTO; onClose: () => vo
   }, [onClose]);
 
   const onWin = useCallback((ms: number, moves: number) => {
+    setResult(ms);
     if (!user) return toast("Sign in to put your time on the leaderboard.");
     api.submitScore(post.id, ms, moves).then((r) => setScores(r.scores)).catch(() => toast("Couldn't save your score."));
   }, [post.id, user, toast]);
@@ -280,7 +372,25 @@ export function GamePlayer({ post, onClose }: { post: PostDTO; onClose: () => vo
         <span className="page-head-right" />
       </header>
       <div className="overlay-body">
-        <Game media={post.media[0]!} type={game.type} size={game.size} onWin={onWin} />
+        <Game media={post.media[0]!} type={game.type} size={game.size} seed={game.seed} onWin={onWin} />
+        {result !== null && post.visibility === "public" && (
+          <button
+            className="btn btn-spark"
+            onClick={async () => {
+              const url = `${location.origin}/p/${post.id}`;
+              const text = `I finished this ${GAME_NAMES[game.type].toLowerCase()} in ${clock(result)} on pics.me. Beat that.`;
+              try {
+                if (navigator.share) await navigator.share({ text, url });
+                else {
+                  await navigator.clipboard.writeText(`${text} ${url}`);
+                  toast("Challenge copied — paste it to a friend");
+                }
+              } catch { /* dismissed */ }
+            }}
+          >
+            <Icon name="share" size={18} /> Challenge a friend
+          </button>
+        )}
         <section className="leaderboard">
           <h3>Fastest times</h3>
           {scores.length === 0 ? (

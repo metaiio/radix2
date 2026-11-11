@@ -14,7 +14,7 @@ let dir: string;
 
 before(async () => {
   dir = fs.mkdtempSync(path.join(os.tmpdir(), "picsme-test-"));
-  app = await buildApp(loadConfig({ dataDir: dir, aiEnabled: false, rateScale: 1000, production: false }));
+  app = await buildApp(loadConfig({ dataDir: dir, aiEnabled: false, rateScale: 1000, production: false, admins: ["boss"] }));
 });
 
 after(async () => {
@@ -137,7 +137,7 @@ test("posts, feed, likes, comments, tags, follow, search", async () => {
   // bob can't post alice's uploads
   assert.equal((await call("POST", "/api/posts", { token: bob, body: { kind: "photo", mediaIds: [m1.id] } })).status, 403);
 
-  const feed = await call("GET", "/api/feed", { token: bob });
+  const feed = await call("GET", "/api/feed/discover", { token: bob });
   assert.ok(feed.json.items.some((x: Json) => x.id === p.id));
 
   const liked = await call("POST", `/api/posts/${p.id}/like`, { token: bob });
@@ -162,10 +162,10 @@ test("posts, feed, likes, comments, tags, follow, search", async () => {
   assert.equal(found.json.users[0].username, "alice");
   assert.equal((await call("GET", "/api/search?q=%25")).json.users.length, 0, "LIKE wildcards are escaped");
 
-  assert.equal((await call("GET", "/api/feed?tab=following", { token: bob })).json.items.length, 0);
+  assert.equal((await call("GET", "/api/feed/home", { token: bob })).json.items.length, 0);
   assert.equal((await call("POST", "/api/users/alice/follow", { token: bob })).json.following, true);
   assert.equal((await call("POST", "/api/users/bob/follow", { token: bob })).status, 400);
-  assert.equal((await call("GET", "/api/feed?tab=following", { token: bob })).json.items.length, 1);
+  assert.equal((await call("GET", "/api/feed/home", { token: bob })).json.items.length, 1);
   const profile = (await call("GET", "/api/users/alice", { token: bob })).json.profile;
   assert.equal(profile.followers, 1);
   assert.equal(profile.isFollowing, true);
@@ -184,7 +184,7 @@ test("feed paginates without repeats", async () => {
   let cursor: string | null = "";
   let pages = 0;
   while (cursor !== null && pages < 10) {
-    const r = await call("GET", `/api/feed?cursor=${encodeURIComponent(cursor)}`);
+    const r = await call("GET", `/api/feed/discover?lens=latest&cursor=${encodeURIComponent(cursor)}`);
     for (const it of r.json.items) {
       assert.ok(!seen.has(it.id), "no duplicates across pages");
       seen.add(it.id);
@@ -308,4 +308,204 @@ test("video upload is probed, gets a poster and an MP4 rendition", { skip: !FFMP
     { name: "poster", filename: "p.jpg", type: "image/jpeg", data: poster },
   ]) });
   assert.equal(fake.status, 400);
+});
+
+test("home is chronological, marks what's new since the last visit, and ends", async () => {
+  const reader = await signup("reader");
+  const a = await signup("poster_a");
+  const b = await signup("poster_b");
+  await call("POST", "/api/users/poster_a/follow", { token: reader });
+  await call("POST", "/api/users/poster_b/follow", { token: reader });
+  const m = await upload(a);
+  const mb = await upload(b);
+  const p1 = await post(a, { kind: "photo", caption: "one", mediaIds: [m.id] });
+  const p2 = await post(b, { kind: "photo", caption: "two", mediaIds: [mb.id] });
+  // Likes must not change the order.
+  await call("POST", `/api/posts/${p1.id}/like`, { token: b });
+
+  const first = await call("GET", "/api/feed/home", { token: reader });
+  assert.deepEqual(first.json.items.map((x: Json) => [x.id, x.fresh]), [[p2.id, true], [p1.id, true]]);
+  assert.equal(first.json.items[0].why, "You follow @poster_b");
+  assert.equal(first.json.next, null, "the stream has an end");
+
+  const p3 = await post(a, { kind: "photo", caption: "three", mediaIds: [m.id] });
+  const second = await call("GET", "/api/feed/home", { token: reader });
+  assert.deepEqual(second.json.items.map((x: Json) => [x.id, x.fresh]), [[p3.id, true], [p2.id, false], [p1.id, false]]);
+  assert.equal((await call("GET", "/api/feed/home")).status, 401);
+});
+
+test("discover lenses each follow their one stated rule", async () => {
+  const viewer = await signup("lensviewer");
+  const star = await signup("lens_star");
+  const m = await upload(star);
+  const plain = await post(star, { kind: "photo", caption: "lensplain", mediaIds: [m.id] });
+  const loved = await post(star, { kind: "photo", caption: "lensloved", mediaIds: [m.id] });
+  const game = await post(star, { kind: "game", caption: "lensgame", mediaIds: [m.id], meta: { game: { type: "spot", size: 5, seed: 42 } } });
+  await call("POST", `/api/posts/${loved.id}/like`, { token: viewer });
+
+  const ids = async (lens: string) => (await call("GET", `/api/feed/discover?lens=${lens}`, { token: viewer })).json.items.map((x: Json) => x.id);
+  const latest = await ids("latest");
+  assert.deepEqual(latest.slice(0, 3), [game.id, loved.id, plain.id]);
+
+  const lovedIds = await ids("loved");
+  assert.ok(lovedIds.includes(loved.id) && !lovedIds.includes(plain.id), "loved only lists posts with likes");
+  assert.ok((await ids("remixes")).includes(game.id) && !(await ids("remixes")).includes(plain.id));
+  assert.ok((await ids("fresh")).includes(plain.id), "an account with few followers is a fresh voice");
+
+  const s1 = await call("GET", "/api/feed/discover?lens=shuffle", { token: viewer });
+  assert.ok(s1.json.items.length > 0);
+  assert.match(s1.json.items[0].why, /random/);
+  if (s1.json.next) {
+    const s2 = await call("GET", `/api/feed/discover?lens=shuffle&cursor=${s1.json.next}`, { token: viewer });
+    const seen = new Set(s1.json.items.map((x: Json) => x.id));
+    assert.ok(s2.json.items.every((x: Json) => !seen.has(x.id)), "shuffle pages don't repeat");
+  }
+  assert.equal(game.meta.game.seed, 42);
+});
+
+test("close circle posts are only visible inside the circle", async () => {
+  const owner = await signup("circ_owner");
+  const friend = await signup("circ_friend");
+  const stranger = await signup("circ_stranger");
+  assert.equal((await call("PUT", "/api/circle/circ_friend", { token: owner })).json.inMyCircle, true);
+  assert.equal((await call("PUT", "/api/circle/circ_owner", { token: owner })).status, 400);
+  assert.deepEqual((await call("GET", "/api/circle", { token: owner })).json.members.map((u: Json) => u.username), ["circ_friend"]);
+  await call("POST", "/api/users/circ_owner/follow", { token: friend });
+
+  const m = await upload(owner);
+  const p = await post(owner, { kind: "photo", caption: "family only #secretcircletag", mediaIds: [m.id], visibility: "circle" });
+  assert.equal(p.visibility, "circle");
+  assert.equal(p.allowRemix, false, "circle posts can't be remixed");
+
+  assert.equal((await call("GET", `/api/posts/${p.id}`, { token: friend })).status, 200);
+  assert.equal((await call("GET", `/api/posts/${p.id}`, { token: stranger })).status, 404);
+  assert.equal((await call("GET", `/api/posts/${p.id}`)).status, 404);
+  assert.equal((await call("POST", `/api/posts/${p.id}/like`, { token: stranger })).status, 404);
+  assert.equal((await call("GET", `/api/posts/${p.id}/comments`, { token: stranger })).status, 404);
+
+  const home = await call("GET", "/api/feed/home", { token: friend });
+  assert.equal(home.json.items[0].id, p.id);
+  assert.match(home.json.items[0].why, /close circle/);
+  const everywhere = [
+    (await call("GET", "/api/feed/discover", { token: friend })).json.items,
+    (await call("GET", "/api/tags/secretcircletag/posts", { token: friend })).json.items,
+    (await call("GET", "/api/search?q=family%20only", { token: friend })).json.posts,
+    (await call("GET", "/api/users/circ_owner/posts", { token: stranger })).json.items,
+  ];
+  assert.ok(everywhere.every((list) => !list.some((x: Json) => x.id === p.id)), "never in public surfaces or to outsiders");
+  assert.equal((await call("GET", "/api/users/circ_owner/posts", { token: friend })).json.items.length, 1);
+  assert.equal((await call("GET", "/api/users/circ_owner", { token: stranger })).json.profile.posts, 0);
+  assert.equal((await call("POST", "/api/ai/caption", { token: friend, body: { mediaId: m.id } })).status, 403);
+
+  await call("DELETE", "/api/circle/circ_friend", { token: owner });
+  assert.equal((await call("GET", `/api/posts/${p.id}`, { token: friend })).status, 404, "leaving the circle removes access");
+});
+
+test("blocking hides both people from each other", async () => {
+  const ann = await signup("blk_ann");
+  const troll = await signup("blk_troll");
+  const p = await post(ann, { kind: "photo", caption: "blkpost", mediaIds: [(await upload(ann)).id] });
+  await call("POST", "/api/users/blk_ann/follow", { token: troll });
+  await call("POST", `/api/posts/${p.id}/comments`, { token: troll, body: { body: "rude" } });
+
+  assert.equal((await call("POST", "/api/users/blk_troll/block", { token: ann })).json.blocked, true);
+  assert.equal((await call("GET", "/api/users/blk_ann", { token: troll })).status, 404);
+  assert.equal((await call("GET", `/api/posts/${p.id}`, { token: troll })).status, 404);
+  assert.equal((await call("POST", "/api/users/blk_ann/follow", { token: troll })).status, 404);
+  assert.ok(!(await call("GET", "/api/feed/discover", { token: troll })).json.items.some((x: Json) => x.id === p.id));
+  assert.equal((await call("GET", `/api/posts/${p.id}/comments`, { token: ann })).json.items.length, 0, "their comments disappear for the blocker");
+  assert.equal((await call("GET", "/api/users/blk_ann")).json.profile.followers, 0, "block removes the follow");
+  assert.equal((await call("GET", "/api/users/blk_troll", { token: ann })).json.profile.blocked, true);
+  assert.deepEqual((await call("GET", "/api/blocks", { token: ann })).json.users.map((u: Json) => u.username), ["blk_troll"]);
+
+  await call("DELETE", "/api/users/blk_troll/block", { token: ann });
+  assert.equal((await call("GET", `/api/posts/${p.id}`, { token: troll })).status, 200);
+});
+
+test("saves are private; activity inbox records likes, comments, follows and remixes once", async () => {
+  const maker = await signup("act_maker");
+  const fan = await signup("act_fan");
+  const m = await upload(maker);
+  const p = await post(maker, { kind: "photo", mediaIds: [m.id] });
+
+  assert.equal((await call("POST", `/api/posts/${p.id}/save`, { token: fan })).json.saved, true);
+  assert.equal((await call("GET", `/api/posts/${p.id}`, { token: fan })).json.post.saved, true);
+  assert.equal((await call("GET", `/api/posts/${p.id}`, { token: maker })).json.post.saved, false);
+  assert.deepEqual((await call("GET", "/api/saved", { token: fan })).json.items.map((x: Json) => x.id), [p.id]);
+  assert.equal((await call("GET", "/api/saved")).status, 401);
+  await call("DELETE", `/api/posts/${p.id}/save`, { token: fan });
+  assert.equal((await call("GET", "/api/saved", { token: fan })).json.items.length, 0);
+
+  await call("POST", `/api/posts/${p.id}/like`, { token: fan });
+  await call("DELETE", `/api/posts/${p.id}/like`, { token: fan });
+  await call("POST", `/api/posts/${p.id}/like`, { token: fan });
+  await call("POST", `/api/posts/${p.id}/like`, { token: maker });
+  await call("POST", `/api/posts/${p.id}/comments`, { token: fan, body: { body: "nice" } });
+  await call("POST", "/api/users/act_maker/follow", { token: fan });
+  await post(fan, { kind: "game", mediaIds: [m.id], remixOf: p.id, meta: { game: { type: "slide", size: 3 } } });
+
+  assert.equal((await call("GET", "/api/me", { token: maker })).json.user.unread, 4);
+  const inbox = await call("GET", "/api/notifications", { token: maker });
+  assert.deepEqual(inbox.json.items.map((n: Json) => n.kind), ["remix", "follow", "comment", "like"]);
+  assert.ok(inbox.json.items.every((n: Json) => n.actor.username === "act_fan" && n.read === false));
+  assert.match(inbox.json.items[3].post.thumb, /t\.webp$/);
+  assert.equal((await call("GET", "/api/me", { token: maker })).json.user.unread, 0, "opening the inbox marks it read");
+});
+
+test("pace settings are stored per person with calm defaults", async () => {
+  const token = await signup("pacer");
+  const me = (await call("GET", "/api/me", { token })).json.user;
+  assert.deepEqual(me.settings, { quietCounts: false, breakEvery: 30, autoplay: true, lens: "latest" });
+  const r = await call("PATCH", "/api/me", { token, body: { settings: { quietCounts: true, breakEvery: 0, lens: "shuffle" } } });
+  assert.deepEqual(r.json.user.settings, { quietCounts: true, breakEvery: 0, autoplay: true, lens: "shuffle" });
+  assert.equal((await call("PATCH", "/api/me", { token, body: { settings: { lens: "engagement" } } })).status, 400);
+});
+
+test("data export is a valid zip with your data and pictures", async () => {
+  const token = await signup("exporter");
+  const m = await upload(token);
+  await post(token, { kind: "photo", caption: "export me", mediaIds: [m.id] });
+  const res = await app.server.inject({ method: "GET", url: "/api/me/export", headers: { authorization: `Bearer ${token}` } });
+  assert.equal(res.statusCode, 200);
+  assert.equal(res.headers["content-type"], "application/zip");
+  const zip = res.rawPayload;
+  assert.equal(zip.readUInt32LE(0), 0x04034b50);
+  const eocd = zip.length - 22;
+  assert.equal(zip.readUInt32LE(eocd), 0x06054b50);
+  assert.equal(zip.readUInt16LE(eocd + 10), 2, "data.json + one picture");
+  // First entry is stored uncompressed, so the JSON is readable in place.
+  const nameLen = zip.readUInt16LE(26), size = zip.readUInt32LE(18);
+  assert.equal(zip.toString("utf8", 30, 30 + nameLen), "data.json");
+  const data = JSON.parse(zip.toString("utf8", 30 + nameLen, 30 + nameLen + size));
+  assert.equal(data.profile.username, "exporter");
+  assert.equal(data.posts[0].caption, "export me");
+  assert.match(data.posts[0].files[0], /^media\/0001-.*\.webp$/);
+  const file = path.join(dir, "export.zip");
+  fs.writeFileSync(file, zip);
+  try {
+    execFileSync("unzip", ["-tq", file]);
+  } catch (err) {
+    if ((err as NodeJS.ErrnoException).code !== "ENOENT") throw err;
+  }
+});
+
+test("reports reach admins, who can dismiss or remove", async () => {
+  const boss = await signup("boss");
+  const user = await signup("reporter");
+  const bad1 = await post(user, { kind: "photo", mediaIds: [(await upload(user)).id] });
+  const bad2 = await post(user, { kind: "photo", mediaIds: [(await upload(user)).id] });
+  await call("POST", `/api/posts/${bad1.id}/report`, { token: boss, body: { reason: "spam" } });
+  await call("POST", `/api/posts/${bad2.id}/report`, { token: boss, body: { reason: "worse spam" } });
+
+  assert.equal((await call("GET", "/api/admin/reports", { token: user })).status, 404, "not visible to non-admins");
+  assert.equal((await call("GET", "/api/me", { token: boss })).json.user.isAdmin, true);
+  const queue = await call("GET", "/api/admin/reports", { token: boss });
+  assert.equal(queue.json.reports.length, 2);
+  assert.equal(queue.json.reports[0].reasons[0].by, "boss");
+
+  await call("POST", `/api/admin/reports/${bad1.id}`, { token: boss, body: { action: "dismiss" } });
+  await call("POST", `/api/admin/reports/${bad2.id}`, { token: boss, body: { action: "remove" } });
+  assert.equal((await call("GET", `/api/posts/${bad1.id}`)).status, 200);
+  assert.equal((await call("GET", `/api/posts/${bad2.id}`)).status, 404);
+  assert.equal((await call("GET", "/api/admin/reports", { token: boss })).json.reports.length, 0);
 });

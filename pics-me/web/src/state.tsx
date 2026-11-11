@@ -1,5 +1,6 @@
 import { createContext, useCallback, useContext, useEffect, useMemo, useRef, useState, useSyncExternalStore, type AnchorHTMLAttributes, type ReactNode } from "react";
-import { api, type Me } from "./api.ts";
+import { DEFAULT_SETTINGS, type Settings } from "../../shared/types.ts";
+import { api, ApiError, type Me } from "./api.ts";
 
 // ---- router (history API, no dependency) -----------------------------------
 
@@ -80,6 +81,11 @@ interface Session {
   ready: boolean;
   ai: "claude" | "local";
   setUser: (u: Me | null) => void;
+  /** Pace settings. Stored on the account when signed in, on this device otherwise. */
+  settings: Settings;
+  updateSettings: (change: Partial<Settings>) => void;
+  /** Re-reads the account (unread count etc.). */
+  refreshMe: () => void;
   /** Returns true when signed in; otherwise sends the visitor to sign-in and returns false. */
   requireAuth: () => boolean;
   toast: (msg: string) => void;
@@ -97,6 +103,13 @@ export function SessionProvider({ children }: { children: ReactNode }) {
   const [user, setUser] = useState<Me | null>(null);
   const [ready, setReady] = useState(false);
   const [ai, setAi] = useState<"claude" | "local">("local");
+  const [local, setLocal] = useState<Settings>(() => {
+    try {
+      return { ...DEFAULT_SETTINGS, ...JSON.parse(localStorage.getItem("pm_settings") ?? "{}") };
+    } catch {
+      return DEFAULT_SETTINGS;
+    }
+  });
   const [toastMsg, setToastMsg] = useState<{ id: number; msg: string } | null>(null);
   const timer = useRef<number>(0);
 
@@ -122,7 +135,30 @@ export function SessionProvider({ children }: { children: ReactNode }) {
     return false;
   }, [user]);
 
-  const value = useMemo(() => ({ user, ready, ai, setUser, requireAuth, toast }), [user, ready, ai, requireAuth, toast]);
+  const settings = user?.settings ?? local;
+  const updateSettings = useCallback((change: Partial<Settings>) => {
+    if (!user) {
+      setLocal((prev) => {
+        const next = { ...prev, ...change };
+        try {
+          localStorage.setItem("pm_settings", JSON.stringify(next));
+        } catch { /* private mode */ }
+        return next;
+      });
+      return;
+    }
+    setUser({ ...user, settings: { ...user.settings, ...change } });
+    api.updateMe({ settings: change }).catch((err) => toast(err instanceof ApiError ? err.message : "Couldn't save that setting."));
+  }, [user, toast]);
+
+  const refreshMe = useCallback(() => {
+    api.me().then((r) => setUser(r.user)).catch(() => {});
+  }, []);
+
+  const value = useMemo(
+    () => ({ user, ready, ai, setUser, settings, updateSettings, refreshMe, requireAuth, toast }),
+    [user, ready, ai, settings, updateSettings, refreshMe, requireAuth, toast],
+  );
 
   return (
     <Ctx.Provider value={value}>

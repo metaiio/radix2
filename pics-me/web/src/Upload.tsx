@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState } from "react";
-import type { MediaDTO } from "../../shared/types.ts";
+import type { MediaDTO, Visibility } from "../../shared/types.ts";
 import { api, ApiError } from "./api.ts";
 import { navigate, refreshFeeds, useSession } from "./state.tsx";
 import { inspectVideo, shrinkForUpload } from "./studio/render.ts";
@@ -22,6 +22,7 @@ export function UploadPage() {
   const [items, setItems] = useState<Item[]>([]);
   const [caption, setCaption] = useState("");
   const [allowRemix, setAllowRemix] = useState(true);
+  const [visibility, setVisibility] = useState<Visibility>("public");
   const [posting, setPosting] = useState(false);
   const [suggesting, setSuggesting] = useState(false);
   const [dragging, setDragging] = useState(false);
@@ -93,7 +94,7 @@ export function UploadPage() {
     setPosting(true);
     try {
       const isVideo = ok[0]!.isVideo;
-      const r = await api.createPost({ kind: isVideo ? "video" : "photo", caption, mediaIds: ok.map((i) => i.media!.id), allowRemix });
+      const r = await api.createPost({ kind: isVideo ? "video" : "photo", caption, mediaIds: ok.map((i) => i.media!.id), allowRemix, visibility });
       refreshFeeds();
       toast("Posted");
       navigate(`/p/${r.post.id}`, { replace: true });
@@ -147,13 +148,29 @@ export function UploadPage() {
             <Icon name="spark" size={18} /> {suggesting ? "Looking at your picture…" : caption ? "Polish my caption" : "Suggest a caption"}
           </button>
 
-          <label className="toggle">
-            <input type="checkbox" checked={allowRemix} onChange={(e) => setAllowRemix(e.target.checked)} />
-            <span>
-              <strong>Allow remixes</strong>
-              <small>Others can turn this post into videos, ads and games. You're always credited.</small>
-            </span>
-          </label>
+          <div className="field">
+            <span>Who can see this</span>
+            <div className="choice-list" role="radiogroup">
+              <button role="radio" aria-checked={visibility === "public"} className={"choice choice-row" + (visibility === "public" ? " on" : "")} onClick={() => setVisibility("public")}>
+                <Icon name="globe" size={22} />
+                <span><strong>Everyone</strong><small>Your followers, your profile and Discover.</small></span>
+              </button>
+              <button role="radio" aria-checked={visibility === "circle"} className={"choice choice-row" + (visibility === "circle" ? " on" : "")} onClick={() => setVisibility("circle")}>
+                <Icon name="lock" size={22} />
+                <span><strong>Close circle</strong><small>Only people you've added to your circle. Never in Discover, search or tags.</small></span>
+              </button>
+            </div>
+          </div>
+
+          {visibility === "public" && (
+            <label className="toggle">
+              <input type="checkbox" checked={allowRemix} onChange={(e) => setAllowRemix(e.target.checked)} />
+              <span>
+                <strong>Allow remixes</strong>
+                <small>Others can turn this post into videos, ads and games. You're always credited.</small>
+              </span>
+            </label>
+          )}
 
           <button className="btn btn-spark btn-wide" disabled={!canPost} onClick={() => void submit()}>
             {posting ? "Posting…" : pending ? `Uploading ${pending}…` : "Post"}

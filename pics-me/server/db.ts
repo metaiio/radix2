@@ -11,6 +11,8 @@ CREATE TABLE IF NOT EXISTS users (
   display_name TEXT NOT NULL,
   bio TEXT NOT NULL DEFAULT '',
   avatar_media_id INTEGER,
+  settings TEXT NOT NULL DEFAULT '{}',
+  last_seen_post INTEGER NOT NULL DEFAULT 0,
   created_at INTEGER NOT NULL
 );
 CREATE TABLE IF NOT EXISTS sessions (
@@ -44,6 +46,7 @@ CREATE TABLE IF NOT EXISTS posts (
   caption TEXT NOT NULL DEFAULT '',
   remix_of INTEGER REFERENCES posts(id) ON DELETE SET NULL,
   allow_remix INTEGER NOT NULL DEFAULT 1,
+  visibility TEXT NOT NULL DEFAULT 'public',
   meta TEXT NOT NULL DEFAULT '{}',
   like_count INTEGER NOT NULL DEFAULT 0,
   comment_count INTEGER NOT NULL DEFAULT 0,
@@ -93,6 +96,35 @@ CREATE TABLE IF NOT EXISTS scores (
   created_at INTEGER NOT NULL,
   PRIMARY KEY (post_id, user_id)
 );
+CREATE TABLE IF NOT EXISTS circle (
+  owner_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+  member_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+  created_at INTEGER NOT NULL,
+  PRIMARY KEY (owner_id, member_id)
+);
+CREATE TABLE IF NOT EXISTS blocks (
+  blocker_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+  blocked_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+  created_at INTEGER NOT NULL,
+  PRIMARY KEY (blocker_id, blocked_id)
+);
+CREATE INDEX IF NOT EXISTS blocks_blocked ON blocks(blocked_id);
+CREATE TABLE IF NOT EXISTS saves (
+  user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+  post_id INTEGER NOT NULL REFERENCES posts(id) ON DELETE CASCADE,
+  created_at INTEGER NOT NULL,
+  PRIMARY KEY (user_id, post_id)
+);
+CREATE TABLE IF NOT EXISTS notifications (
+  id INTEGER PRIMARY KEY,
+  user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+  actor_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+  kind TEXT NOT NULL,
+  post_id INTEGER REFERENCES posts(id) ON DELETE CASCADE,
+  read INTEGER NOT NULL DEFAULT 0,
+  created_at INTEGER NOT NULL
+);
+CREATE INDEX IF NOT EXISTS notifications_user ON notifications(user_id, id DESC);
 CREATE TABLE IF NOT EXISTS reports (
   id INTEGER PRIMARY KEY,
   post_id INTEGER NOT NULL REFERENCES posts(id) ON DELETE CASCADE,
@@ -115,6 +147,19 @@ export class DB {
     this.raw = new DatabaseSync(file);
     this.raw.exec("PRAGMA journal_mode = WAL; PRAGMA synchronous = NORMAL; PRAGMA foreign_keys = ON; PRAGMA busy_timeout = 5000;");
     this.raw.exec(SCHEMA);
+    this.migrate();
+  }
+
+  /** Adds columns introduced after a database was first created. */
+  private migrate() {
+    const has = (table: string, col: string) =>
+      (this.raw.prepare(`PRAGMA table_info(${table})`).all() as { name: string }[]).some((c) => c.name === col);
+    const add = (table: string, col: string, ddl: string) => {
+      if (!has(table, col)) this.raw.exec(`ALTER TABLE ${table} ADD COLUMN ${col} ${ddl}`);
+    };
+    add("users", "settings", "TEXT NOT NULL DEFAULT '{}'");
+    add("users", "last_seen_post", "INTEGER NOT NULL DEFAULT 0");
+    add("posts", "visibility", "TEXT NOT NULL DEFAULT 'public'");
   }
 
   private stmt(sql: string) {

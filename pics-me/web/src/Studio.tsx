@@ -5,6 +5,7 @@ import { api, ApiError, type NewPost } from "./api.ts";
 import { Game, GAME_HELP, GAME_NAMES } from "./games.tsx";
 import { navigate, refreshFeeds, useSession } from "./state.tsx";
 import { AD_FORMATS, canvasBlob, drawAd, loadImage, renderVideo, shrinkForUpload, VIDEO_FORMATS, videoSupported, type AdFormat, type VideoFormat, type VideoResult } from "./studio/render.ts";
+import { SOUNDTRACKS, type Soundtrack } from "./studio/music.ts";
 import { Empty, Icon, PageHeader, Picture, Spinner } from "./ui.tsx";
 
 interface Source {
@@ -163,6 +164,8 @@ function VideoTool({ source }: { source: Source }) {
   const { toast } = useSession();
   const [vibe, setVibe] = useState("");
   const [format, setFormat] = useState<VideoFormat>("vertical");
+  const [music, setMusic] = useState<Soundtrack>("calm");
+  const audio = useRef<AudioContext | null>(null);
   const [board, setBoard] = useState<Storyboard | null>(null);
   const [phase, setPhase] = useState<"idle" | "planning" | "rendering" | "done">("idle");
   const [progress, setProgress] = useState(0);
@@ -174,10 +177,19 @@ function VideoTool({ source }: { source: Source }) {
   const images = useRef<HTMLImageElement[] | null>(null);
   const media = useMemo(() => source.media.slice(0, 8), [source]);
 
-  useEffect(() => () => abort.current?.abort(), []);
+  useEffect(() => () => {
+    abort.current?.abort();
+    void audio.current?.close().catch(() => {});
+  }, []);
   useEffect(() => () => {
     if (result) URL.revokeObjectURL(result.url);
   }, [result]);
+
+  // Must be called straight from a tap: browsers only let audio start from a user gesture.
+  const armAudio = () => {
+    void audio.current?.close().catch(() => {});
+    audio.current = music === "none" || typeof AudioContext === "undefined" ? null : new AudioContext();
+  };
 
   const render = async (b: Storyboard) => {
     abort.current?.abort();
@@ -187,7 +199,10 @@ function VideoTool({ source }: { source: Source }) {
     setResult(null);
     try {
       images.current ??= await Promise.all(media.map((m) => loadImage(m.urls.l)));
-      const out = await renderVideo(images.current, b, { format, canvas: canvas.current!, onProgress: setProgress, signal: ctl.signal });
+      const out = await renderVideo(images.current, b, {
+        format, canvas: canvas.current!, onProgress: setProgress, signal: ctl.signal,
+        music: audio.current && music !== "none" ? { ctx: audio.current, style: music } : undefined,
+      });
       setResult({ ...out, url: URL.createObjectURL(out.blob) });
       setPhase("done");
     } catch (err) {
@@ -248,7 +263,18 @@ function VideoTool({ source }: { source: Source }) {
             ))}
           </div>
         </div>
-        <button className="btn btn-spark btn-wide" disabled={working} onClick={() => void create()}>
+        <div className="field">
+          <span>Soundtrack</span>
+          <div className="chips">
+            {(Object.keys(SOUNDTRACKS) as Soundtrack[]).map((m) => (
+              <button key={m} className={"chip" + (music === m ? " on" : "")} aria-pressed={music === m} disabled={working} onClick={() => setMusic(m)}>
+                {m !== "none" && <Icon name="music" size={15} />} {SOUNDTRACKS[m]}
+              </button>
+            ))}
+          </div>
+          <small>Generated on your device, so it's free to use anywhere.</small>
+        </div>
+        <button className="btn btn-spark btn-wide" disabled={working} onClick={() => (armAudio(), void create())}>
           <Icon name="spark" size={20} /> {board ? "Start over with a new plan" : "Create video"}
         </button>
 
@@ -267,7 +293,7 @@ function VideoTool({ source }: { source: Source }) {
                 </li>
               ))}
             </ol>
-            <button className="btn btn-ghost btn-wide" disabled={working} onClick={() => void render(board)}><Icon name="refresh" size={18} /> Render again with these edits</button>
+            <button className="btn btn-ghost btn-wide" disabled={working} onClick={() => (armAudio(), void render(board))}><Icon name="refresh" size={18} /> Render again with these edits</button>
           </>
         )}
 
@@ -391,7 +417,7 @@ function AdTool({ source }: { source: Source }) {
             </div>
             <div className="field">
               <span>Text position</span>
-              <div className="chips">{LAYOUTS.map((l) => <button key={l} className={"chip" + (copy.layout === l ? " on" : "")} onClick={() => edit({ layout: l })}>{l}</button>)}</div>
+              <div className="chips">{LAYOUTS.map((l) => <button key={l} className={"chip" + (copy.layout === l ? " on" : "")} onClick={() => edit({ layout: l })}>{l.charAt(0).toUpperCase() + l.slice(1)}</button>)}</div>
             </div>
             <label className="field">
               <span>Button link (optional)</span>
@@ -432,19 +458,20 @@ function GameTool({ source }: { source: Source }) {
   const [pick, setPick] = useState(0);
   const [type, setType] = useState<GameType>("slide");
   const [size, setSize] = useState(3);
+  const [seed, setSeed] = useState(() => 1 + Math.floor(Math.random() * 1e9));
   const [caption, setCaption] = useState("Can you beat my time? #puzzle");
   const [busy, setBusy] = useState(false);
   // Games are played on a still picture, so video sources don't qualify.
   const pics = source.media.filter((m) => m.kind === "image");
   const media = pics[pick] ?? pics[0];
-  const realSize = type === "memory" ? 4 : size;
+  const realSize = type === "memory" ? 4 : type === "spot" ? size + 2 : size;
 
   if (!media) return <Empty title="Games need a still picture"><p>Pick a photo post to build a game from.</p></Empty>;
 
   return (
     <div className="tool">
       <div className="tool-stage">
-        <Game media={media} type={type} size={realSize} />
+        <Game media={media} type={type} size={realSize} seed={seed} />
         {pics.length > 1 && (
           <div className="thumb-row">
             {pics.map((m, i) => (
@@ -469,7 +496,12 @@ function GameTool({ source }: { source: Source }) {
           <div className="field">
             <span>Difficulty</span>
             <div className="chips">
-              {[3, 4, 5].map((n) => <button key={n} className={"chip" + (size === n ? " on" : "")} onClick={() => setSize(n)}>{n} × {n}</button>)}
+              {[3, 4, 5].map((n) => (
+                <button key={n} className={"chip" + (size === n ? " on" : "")} aria-pressed={size === n} onClick={() => setSize(n)}>
+                  {type === "spot" ? `${n + 2} changes` : `${n} × ${n}`}
+                </button>
+              ))}
+              {type === "spot" && <button className="chip" onClick={() => setSeed(1 + Math.floor(Math.random() * 1e9))}><Icon name="refresh" size={15} /> New changes</button>}
             </div>
           </div>
         )}
@@ -481,7 +513,7 @@ function GameTool({ source }: { source: Source }) {
           onPublish={async () => {
             setBusy(true);
             try {
-              await publish({ kind: "game", caption, mediaIds: [media.id], remixOf: source.remixOf, meta: { game: { type, size: realSize } } }, toast);
+              await publish({ kind: "game", caption, mediaIds: [media.id], remixOf: source.remixOf, meta: { game: { type, size: realSize, ...(type === "spot" ? { seed } : {}) } } }, toast);
             } catch (err) {
               toast(msg(err, "Couldn't post the game."));
               setBusy(false);

@@ -16,6 +16,8 @@ export interface Config {
   production: boolean;
   /** Multiplier for rate limits (tests raise it). */
   rateScale: number;
+  /** Usernames allowed to review reports. */
+  admins: string[];
 }
 
 export function loadConfig(overrides: Partial<Config> = {}): Config {
@@ -31,6 +33,7 @@ export function loadConfig(overrides: Partial<Config> = {}): Config {
     aiEnabled: Boolean(env.ANTHROPIC_API_KEY || env.ANTHROPIC_AUTH_TOKEN),
     production: env.NODE_ENV === "production",
     rateScale: num(env.RATE_SCALE, 1),
+    admins: (env.ADMIN_USERS ?? "").split(",").map((s) => s.trim().toLowerCase()).filter(Boolean),
     ...overrides,
   };
 }
